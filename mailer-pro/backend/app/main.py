@@ -16,17 +16,26 @@ limiter = Limiter(key_func=get_remote_address)
 
 
 async def seed_admin():
-    async with AsyncSessionLocal() as db:
-        result = await db.execute(select(User).where(User.email == "admin@mailerpro.com"))
-        if not result.scalar_one_or_none():
-            db.add(User(
-                email="admin@mailerpro.com",
-                password_hash=hash_password("admin123"),
-                full_name="Admin",
-                role="admin",
-                is_active=True,
-            ))
-            await db.commit()
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(select(User).where(User.email == "admin@mailerpro.com"))
+            existing = result.scalar_one_or_none()
+            if not existing:
+                hashed = hash_password("admin123")
+                print(f"[SEED] Creating admin user, hash prefix: {hashed[:10]}", flush=True)
+                db.add(User(
+                    email="admin@mailerpro.com",
+                    password_hash=hashed,
+                    full_name="Admin",
+                    role="admin",
+                    is_active=True,
+                ))
+                await db.commit()
+                print("[SEED] Admin user created successfully", flush=True)
+            else:
+                print(f"[SEED] Admin user already exists (id={existing.id})", flush=True)
+    except Exception as e:
+        print(f"[SEED] ERROR: {e}", flush=True)
 
 
 @asynccontextmanager
