@@ -16,13 +16,15 @@ limiter = Limiter(key_func=get_remote_address)
 
 
 async def seed_admin():
+    import sys
+    import logging
+    logger = logging.getLogger("mailerpro.seed")
     try:
         async with AsyncSessionLocal() as db:
             result = await db.execute(select(User).where(User.email == "admin@mailerpro.com"))
             existing = result.scalar_one_or_none()
+            hashed = hash_password("admin123")
             if not existing:
-                hashed = hash_password("admin123")
-                print(f"[SEED] Creating admin user, hash prefix: {hashed[:10]}", flush=True)
                 db.add(User(
                     email="admin@mailerpro.com",
                     password_hash=hashed,
@@ -31,11 +33,19 @@ async def seed_admin():
                     is_active=True,
                 ))
                 await db.commit()
-                print("[SEED] Admin user created successfully", flush=True)
+                logger.warning("SEED: admin user created")
             else:
-                print(f"[SEED] Admin user already exists (id={existing.id})", flush=True)
+                # Always reset password to ensure it's correct
+                from sqlalchemy import update
+                await db.execute(
+                    update(User).where(User.email == "admin@mailerpro.com").values(
+                        password_hash=hashed, is_active=True, role="admin"
+                    )
+                )
+                await db.commit()
+                logger.warning("SEED: admin user password reset")
     except Exception as e:
-        print(f"[SEED] ERROR: {e}", flush=True)
+        logger.error(f"SEED ERROR: {e}")
 
 
 @asynccontextmanager
