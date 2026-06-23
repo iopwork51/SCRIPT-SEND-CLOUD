@@ -3,14 +3,41 @@ from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from contextlib import asynccontextmanager
+from sqlalchemy import select
 
 from app.core.config import settings
+from app.core.database import AsyncSessionLocal
+from app.core.security import hash_password
+from app.db.models.users import User
 from app.api.routes import auth, users, accounts, groups, recipients, affiliates, offers, blacklist, campaigns
 
 limiter = Limiter(key_func=get_remote_address)
 
+
+async def seed_admin():
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(User).where(User.email == "admin@mailerpro.com"))
+        if not result.scalar_one_or_none():
+            db.add(User(
+                email="admin@mailerpro.com",
+                password_hash=hash_password("admin123"),
+                full_name="Admin",
+                role="admin",
+                is_active=True,
+            ))
+            await db.commit()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await seed_admin()
+    yield
+
+
 app = FastAPI(
     title="MailerPro API",
+    lifespan=lifespan,
     version="1.0.0",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
