@@ -1,36 +1,101 @@
 import { useEffect, useState } from "react";
 import api from "../lib/api";
-import { ChevronRight, ChevronLeft, Copy, ExternalLink, CheckCircle, Send as SendIcon } from "lucide-react";
+import { Send as SendIcon, Copy, CheckCircle, ExternalLink, RefreshCw } from "lucide-react";
 
-const STEPS = ["Groups", "Lists", "Offer", "Compose", "Config", "Review", "Test", "Launch"];
+// ── tiny helpers ──────────────────────────────────────────────────────────────
+const Toggle = ({ value, onChange, label }) => (
+  <button
+    type="button"
+    onClick={() => onChange(!value)}
+    className={`px-3 py-0.5 rounded text-xs font-bold border transition-colors ${
+      value ? "bg-green-500 text-white border-green-500" : "bg-gray-100 text-gray-500 border-gray-200"
+    }`}
+  >
+    {value ? "ON" : "OFF"}
+  </button>
+);
 
+const SectionLabel = ({ children }) => (
+  <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">{children}</div>
+);
+
+const Field = ({ label, children }) => (
+  <div>
+    <SectionLabel>{label}</SectionLabel>
+    {children}
+  </div>
+);
+
+const sel =
+  "w-full border border-gray-300 rounded px-2 py-1 text-xs bg-white focus:outline-none focus:border-blue-400";
+const inp =
+  "w-full border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:border-blue-400";
+const ta =
+  "w-full border border-gray-300 rounded px-2 py-1 text-xs font-mono resize-none focus:outline-none focus:border-blue-400";
+
+// ── component ─────────────────────────────────────────────────────────────────
 export default function Send() {
-  const [step, setStep] = useState(0);
-  const [groups, setGroups] = useState([]);
-  const [lists, setLists] = useState([]);
-  const [offers, setOffers] = useState([]);
+  // -- data
+  const [groups, setGroups]     = useState([]);
+  const [lists, setLists]       = useState([]);
+  const [offers, setOffers]     = useState([]);
   const [networks, setNetworks] = useState([]);
 
-  // Selections
-  const [selectedGroups, setSelectedGroups] = useState([]);
-  const [selectedLists, setSelectedLists] = useState([]);
-  const [selectedOffer, setSelectedOffer] = useState(null);
-  const [compose, setCompose] = useState({
-    name: "Campaign " + new Date().toLocaleDateString(),
-    header_template: "From: {an_10} <info_{an_12}@[al_12].com>\nSubject: [an_13] - Important Update",
-    body_html: "<p>Hello [first_name],</p>\n<p>Click here: <a href=\"{{offer.tracking_url}}\">Claim Now</a></p>\n<div style=\"color:white;font-size:1px\">[negative]</div>",
-    negative_content: "",
-    links: "",
+  // -- selections
+  const [selGroups, setSelGroups] = useState([]);
+  const [selLists, setSelLists]   = useState([]);
+
+  // -- config fields
+  const [cfg, setCfg] = useState({
+    send_mode:       "smtp",          // smtp | gmail_api
+    content_type:    "text/html",
+    charset:         "UTF-8",
+    transfer_enc:    "7bit",
+    process_type:    "batch",         // batch | xdelay
+    batch:           1000,
+    xdelay_ms:       1000,
+    max_workers:     5,
+    link_type:       "routing",       // routing | direct
+    track_opens:     true,
+    headers_rot:     1,
+    body_rot:        1,
+    return_path:     "return@[domain]",
+    static_domain:   "[domain]",
+    from_names:      "",              // one per line
+    subjects:        "",              // one per line
+    header_tpl:      `MIME-Version: 1.0\nMessage-Id: <[a_7][n_6][n_3][a_3]@[domain]>\nFrom: [a_5] <[a_7]@[domain]>\nSubject: [p|server] [an_5]\nReply-To: reply_to@[domain]\nTo: [email]\nContent-Transfer-Encoding: [content_transfer_encoding]\nContent-Type: [content_type]; charset=[charset]\nDate: [mail_date]`,
+    body_html:       `<p>Hello [first_name],</p>\n<p>Click here: <a href="{{offer.tracking_url}}">Claim Now</a></p>\n<div style="color:white;font-size:1px">[negative]</div>`,
+    negative_content:"",
+    offer_id:        "",
+    network_id:      "",
+    rcpt_rotation:   1,
+    combination:     false,
+    placeholders:    "",              // one per line
+    direct_recipients: "",            // paste emails
+    // filters
+    filter_fresh:    false,
+    filter_clean:    false,
+    filter_openers:  false,
+    filter_clickers: false,
+    filter_leaders:  false,
+    filter_unsubs:   false,
+    filter_optouts:  false,
+    filter_seeds:    false,
+    random_dots:     false,
+    nbre_dots:       2,
+    test_after:      1000,
+    test_email:      "",
   });
-  const [config, setConfig] = useState({ batch_size: 1, sleep_between: 3, max_workers: 5, send_mode: "mx_direct" });
-  const [testEmail, setTestEmail] = useState("");
-  const [testResult, setTestResult] = useState(null);
-  const [script, setScript] = useState(null);
+
+  // -- state
+  const [script, setScript]       = useState(null);
   const [scriptMeta, setScriptMeta] = useState(null);
-  const [reviewData, setReviewData] = useState(null);
+  const [testResult, setTestResult] = useState(null);
+  const [launching, setLaunching] = useState(false);
+  const [testing, setTesting]     = useState(false);
+  const [generating, setGenerating] = useState(false);
   const [campaignId, setCampaignId] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied]       = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -46,59 +111,74 @@ export default function Send() {
     });
   }, []);
 
-  const toggle = (arr, setArr, id) => setArr(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  const set = (k) => (v) => setCfg((c) => ({ ...c, [k]: v }));
+  const setE = (k) => (e) => setCfg((c) => ({ ...c, [k]: e.target.value }));
+  const toggleGroup = (id) => setSelGroups((p) => p.includes(id) ? p.filter((x) => x !== id) : [...p, id]);
+  const toggleList  = (id) => setSelLists((p)  => p.includes(id) ? p.filter((x) => x !== id) : [...p, id]);
 
-  const buildReview = async () => {
-    // Quick pre-check
-    const totalRecipients = lists.filter(l => selectedLists.includes(l.id)).reduce((s, l) => s + l.total_count, 0);
-    const activeAccounts = groups.filter(g => selectedGroups.includes(g.id)).reduce((s, g) => s + g.active_accounts, 0);
-    setReviewData({ totalRecipients, activeAccounts, offer: selectedOffer });
-  };
+  const buildPayload = () => ({
+    name: `Campaign ${new Date().toLocaleString()}`,
+    header_template: cfg.header_tpl,
+    body_html: cfg.body_html,
+    negative_content: cfg.negative_content,
+    links: [],
+    offer_id: cfg.offer_id ? parseInt(cfg.offer_id) : null,
+    group_ids: selGroups,
+    list_ids: selLists,
+    batch_size: parseInt(cfg.batch) || 1,
+    sleep_between: Math.round((cfg.xdelay_ms || 0) / 1000),
+    max_workers: parseInt(cfg.max_workers) || 5,
+    send_mode: cfg.send_mode,
+  });
 
   const saveCampaign = async () => {
-    setLoading(true);
-    try {
-      const { data } = await api.post("/campaigns", {
-        name: compose.name,
-        header_template: compose.header_template,
-        body_html: compose.body_html,
-        negative_content: compose.negative_content,
-        links: compose.links ? compose.links.split("\n").filter(Boolean) : [],
-        offer_id: selectedOffer?.id || null,
-        group_ids: selectedGroups,
-        list_ids: selectedLists,
-        ...config,
-      });
-      setCampaignId(data.id);
-      return data.id;
-    } finally {
-      setLoading(false);
-    }
+    const { data } = await api.post("/campaigns", buildPayload());
+    setCampaignId(data.id);
+    return data.id;
   };
 
-  const sendTest = async () => {
-    setLoading(true);
+  const handleTest = async () => {
+    if (!cfg.test_email) return;
+    setTesting(true);
     try {
       let cid = campaignId;
       if (!cid) cid = await saveCampaign();
-      const { data } = await api.post(`/campaigns/${cid}/preview`, { to_email: testEmail });
+      const { data } = await api.post(`/campaigns/${cid}/preview`, { to_email: cfg.test_email });
       setTestResult(data);
+    } catch (e) {
+      setTestResult({ success: false, error: e.response?.data?.detail || "Error" });
     } finally {
-      setLoading(false);
+      setTesting(false);
     }
   };
 
-  const generateScript = async () => {
-    setLoading(true);
+  const handleGenerate = async () => {
+    setGenerating(true);
     try {
       let cid = campaignId;
       if (!cid) cid = await saveCampaign();
       const { data } = await api.post(`/campaigns/${cid}/generate-script`);
       setScript(data.script);
       setScriptMeta(data);
-      setCampaignId(cid);
+    } catch (e) {
+      alert("Error: " + (e.response?.data?.detail || e.message));
     } finally {
-      setLoading(false);
+      setGenerating(false);
+    }
+  };
+
+  const handleLaunch = async () => {
+    if (!confirm("Launch campaign now?")) return;
+    setLaunching(true);
+    try {
+      let cid = campaignId;
+      if (!cid) cid = await saveCampaign();
+      await api.post(`/campaigns/${cid}/start`);
+      alert("Campaign launched!");
+    } catch (e) {
+      alert("Error: " + (e.response?.data?.detail || e.message));
+    } finally {
+      setLaunching(false);
     }
   };
 
@@ -108,273 +188,342 @@ export default function Send() {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const next = async () => {
-    if (step === 4) await buildReview();
-    setStep(s => Math.min(s + 1, STEPS.length - 1));
-  };
-
   return (
-    <div className="p-6">
-      <h1 className="text-xl font-bold text-gray-900 mb-6">New Campaign</h1>
-
-      {/* Step indicator */}
-      <div className="flex items-center gap-1 mb-8 overflow-x-auto pb-2">
-        {STEPS.map((s, i) => (
-          <div key={s} className="flex items-center gap-1 shrink-0">
-            <button onClick={() => setStep(i)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${i === step ? "bg-blue-600 text-white" : i < step ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"}`}>
-              {i < step ? "✓ " : `${i + 1}. `}{s}
-            </button>
-            {i < STEPS.length - 1 && <ChevronRight size={12} className="text-gray-300" />}
-          </div>
-        ))}
-      </div>
-
-      {/* Step content */}
-      <div className="bg-white rounded-xl border border-gray-200 p-6 min-h-64">
-
-        {/* Step 0: Groups */}
-        {step === 0 && (
-          <div>
-            <h2 className="font-semibold text-gray-900 mb-4">Select Sender Account Groups</h2>
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-              {groups.map(g => (
-                <label key={g.id} className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${selectedGroups.includes(g.id) ? "border-blue-500 bg-blue-50" : "border-gray-200 hover:border-gray-300"}`}>
-                  <input type="checkbox" checked={selectedGroups.includes(g.id)} onChange={() => toggle(selectedGroups, setSelectedGroups, g.id)} className="mt-0.5" />
-                  <div>
-                    <div className="font-medium text-sm text-gray-900">{g.name}</div>
-                    <div className="text-xs text-gray-500">{g.total_accounts} accounts ({g.active_accounts} active)</div>
-                  </div>
-                </label>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Step 1: Lists */}
-        {step === 1 && (
-          <div>
-            <h2 className="font-semibold text-gray-900 mb-4">Select Recipient Lists</h2>
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-              {lists.map(l => (
-                <label key={l.id} className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${selectedLists.includes(l.id) ? "border-blue-500 bg-blue-50" : "border-gray-200 hover:border-gray-300"}`}>
-                  <input type="checkbox" checked={selectedLists.includes(l.id)} onChange={() => toggle(selectedLists, setSelectedLists, l.id)} className="mt-0.5" />
-                  <div>
-                    <div className="font-medium text-sm text-gray-900">{l.name}</div>
-                    <div className="text-xs text-gray-500">{l.total_count.toLocaleString()} total</div>
-                  </div>
-                </label>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Step 2: Offer */}
-        {step === 2 && (
-          <div>
-            <h2 className="font-semibold text-gray-900 mb-4">Select Offer</h2>
-            <div className="space-y-2 max-h-80 overflow-y-auto">
-              {offers.map(o => (
-                <label key={o.id} className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${selectedOffer?.id === o.id ? "border-blue-500 bg-blue-50" : "border-gray-200 hover:border-gray-300"}`}>
-                  <input type="radio" name="offer" checked={selectedOffer?.id === o.id} onChange={() => setSelectedOffer(o)} />
-                  <div className="flex-1">
-                    <div className="font-medium text-sm text-gray-900">{o.name}</div>
-                    <div className="text-xs text-gray-500">
-                      {networks.find(n => n.id === o.network_id)?.name || "—"} · {o.payout ? `$${o.payout}` : "no payout"} · <span className="font-mono text-xs truncate">{o.tracking_url?.slice(0, 40)}…</span>
-                    </div>
-                  </div>
-                </label>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Step 3: Compose */}
-        {step === 3 && (
-          <div className="space-y-4">
-            <h2 className="font-semibold text-gray-900">Compose Email</h2>
-            <div>
-              <label className="text-xs text-gray-500 block mb-1">Campaign Name</label>
-              <input value={compose.name} onChange={e => setCompose(c => ({...c, name: e.target.value}))} className="w-full border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:border-blue-400" />
-            </div>
-            <div>
-              <label className="text-xs text-gray-500 block mb-1">Header Template (From, Subject, custom headers)</label>
-              <textarea rows={4} value={compose.header_template} onChange={e => setCompose(c => ({...c, header_template: e.target.value}))}
-                className="w-full border border-gray-200 rounded-lg px-2.5 py-2 text-xs font-mono focus:outline-none focus:border-blue-400" />
-            </div>
-            <div>
-              <label className="text-xs text-gray-500 block mb-1">HTML Body</label>
-              <textarea rows={8} value={compose.body_html} onChange={e => setCompose(c => ({...c, body_html: e.target.value}))}
-                className="w-full border border-gray-200 rounded-lg px-2.5 py-2 text-xs font-mono focus:outline-none focus:border-blue-400" />
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="text-xs text-gray-500 block mb-1">Links (one per line, for [LinksPlaceholder])</label>
-                <textarea rows={3} value={compose.links} onChange={e => setCompose(c => ({...c, links: e.target.value}))} placeholder="https://example.com/lp1&#10;https://example.com/lp2"
-                  className="w-full border border-gray-200 rounded-lg px-2.5 py-2 text-xs font-mono focus:outline-none focus:border-blue-400" />
-              </div>
-              <div>
-                <label className="text-xs text-gray-500 block mb-1">Negative Content (for [negative] tag)</label>
-                <textarea rows={3} value={compose.negative_content} onChange={e => setCompose(c => ({...c, negative_content: e.target.value}))} placeholder="News content for spam filter bypass…"
-                  className="w-full border border-gray-200 rounded-lg px-2.5 py-2 text-xs font-mono focus:outline-none focus:border-blue-400" />
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Step 4: Config */}
-        {step === 4 && (
-          <div>
-            <h2 className="font-semibold text-gray-900 mb-4">Send Configuration</h2>
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-4 max-w-lg">
-              {[
-                { key: "batch_size", label: "Batch Size", min: 1, max: 100, help: "Recipients per batch" },
-                { key: "sleep_between", label: "Sleep Between (sec)", min: 0, help: "Seconds between batches" },
-                { key: "max_workers", label: "Max Workers", min: 1, max: 50, help: "Concurrent threads" },
-              ].map(({ key, label, min, max, help }) => (
-                <div key={key}>
-                  <label className="text-xs text-gray-500 block mb-1">{label}</label>
-                  <input type="number" min={min} max={max} value={config[key]} onChange={e => setConfig(c => ({...c, [key]: parseInt(e.target.value)}))}
-                    className="w-full border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:border-blue-400" />
-                  {help && <p className="text-xs text-gray-400 mt-0.5">{help}</p>}
-                </div>
-              ))}
-              <div>
-                <label className="text-xs text-gray-500 block mb-1">Send Mode</label>
-                <select value={config.send_mode} onChange={e => setConfig(c => ({...c, send_mode: e.target.value}))}
-                  className="w-full border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:border-blue-400 bg-white">
-                  <option value="mx_direct">MX Direct (like snd.py)</option>
-                  <option value="smtp">Gmail SMTP</option>
-                </select>
-                <p className="text-xs text-gray-400 mt-0.5">MX direct bypasses Gmail SMTP limits</p>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Step 5: Review */}
-        {step === 5 && (
-          <div>
-            <h2 className="font-semibold text-gray-900 mb-4">Pre-Send Review</h2>
-            {reviewData ? (
-              <div className="space-y-3">
-                <ReviewRow label="Total recipients" value={reviewData.totalRecipients.toLocaleString()} />
-                <ReviewRow label="Active accounts" value={reviewData.activeAccounts} />
-                <ReviewRow label="Selected groups" value={selectedGroups.length} />
-                <ReviewRow label="Selected lists" value={selectedLists.length} />
-                <ReviewRow label="Offer" value={reviewData.offer?.name || "None"} />
-                <ReviewRow label="Batch size" value={config.batch_size} />
-                <ReviewRow label="Send mode" value={config.send_mode} />
-                <div className="bg-blue-50 border border-blue-100 rounded-lg p-3 text-sm text-blue-800">
-                  Suppression and blacklist filtering will run at script generation time. Final recipient count will be shown with the script.
-                </div>
-              </div>
-            ) : (
-              <div className="text-gray-400 text-sm">Loading review…</div>
-            )}
-          </div>
-        )}
-
-        {/* Step 6: Test */}
-        {step === 6 && (
-          <div>
-            <h2 className="font-semibold text-gray-900 mb-4">Send Test Email</h2>
-            <div className="flex gap-3 max-w-sm mb-4">
-              <input type="email" placeholder="test@example.com" value={testEmail} onChange={e => setTestEmail(e.target.value)}
-                className="flex-1 border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:border-blue-400" />
-              <button onClick={sendTest} disabled={!testEmail || loading}
-                className="px-4 py-1.5 text-sm bg-blue-600 text-white hover:bg-blue-700 rounded-lg disabled:opacity-50">
-                {loading ? "Sending…" : "Send Test"}
-              </button>
-            </div>
-            {testResult && (
-              <div className={`p-3 rounded-lg text-sm ${testResult.success ? "bg-green-50 text-green-800 border border-green-100" : "bg-red-50 text-red-800 border border-red-100"}`}>
-                {testResult.success ? (
-                  <span>✓ Test email sent via <code className="font-mono">{testResult.mx}</code></span>
-                ) : (
-                  <span>✗ Failed: {testResult.error}</span>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Step 7: Launch */}
-        {step === 7 && (
-          <div>
-            <h2 className="font-semibold text-gray-900 mb-2">Generate & Launch</h2>
-            <p className="text-sm text-gray-500 mb-4">Generate a Python script to run in Google Cloud Shell.</p>
-
-            {!script ? (
-              <button onClick={generateScript} disabled={loading}
-                className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 text-white hover:bg-blue-700 rounded-lg disabled:opacity-50 text-sm font-medium">
-                <SendIcon size={14} /> {loading ? "Generating…" : "Generate Script"}
-              </button>
-            ) : (
-              <div className="space-y-4">
-                {scriptMeta && (
-                  <div className="grid grid-cols-3 gap-3 text-sm">
-                    <div className="bg-gray-50 rounded-lg p-3 text-center">
-                      <div className="text-2xl font-bold text-gray-900">{scriptMeta.final_count.toLocaleString()}</div>
-                      <div className="text-xs text-gray-500 mt-0.5">Clean recipients</div>
-                    </div>
-                    <div className="bg-gray-50 rounded-lg p-3 text-center">
-                      <div className="text-2xl font-bold text-orange-600">{scriptMeta.filtered_count}</div>
-                      <div className="text-xs text-gray-500 mt-0.5">Filtered (suppressed/blacklisted)</div>
-                    </div>
-                    <div className="bg-gray-50 rounded-lg p-3 text-center">
-                      <div className="text-2xl font-bold text-blue-600">{scriptMeta.accounts_count}</div>
-                      <div className="text-xs text-gray-500 mt-0.5">Active accounts</div>
-                    </div>
-                  </div>
-                )}
-
-                <div className="relative">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs font-medium text-gray-600">Generated Python Script</span>
-                    <button onClick={copyScript} className={`flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg transition-colors ${copied ? "bg-green-100 text-green-700" : "bg-gray-100 hover:bg-gray-200 text-gray-600"}`}>
-                      {copied ? <CheckCircle size={11} /> : <Copy size={11} />}
-                      {copied ? "Copied!" : "Copy"}
-                    </button>
-                  </div>
-                  <pre className="bg-gray-900 text-green-400 text-xs rounded-xl p-4 overflow-auto max-h-64 font-mono">{script}</pre>
-                </div>
-
-                <div className="flex items-center gap-3">
-                  <a href="https://console.cloud.google.com/cloudshelleditor" target="_blank" rel="noopener noreferrer"
-                    className="flex items-center gap-1.5 px-4 py-2 text-sm bg-blue-600 text-white hover:bg-blue-700 rounded-lg">
-                    <ExternalLink size={13} /> Open Cloud Console
-                  </a>
-                  <span className="text-xs text-gray-400">Copy script → paste into Cloud Shell → run: <code className="font-mono">python3 script.py</code></span>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Navigation */}
-      <div className="flex items-center justify-between mt-4">
-        <button onClick={() => setStep(s => Math.max(0, s - 1))} disabled={step === 0}
-          className="flex items-center gap-1.5 px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg disabled:opacity-30">
-          <ChevronLeft size={14} /> Back
-        </button>
-        {step < STEPS.length - 1 && (
-          <button onClick={next}
-            className="flex items-center gap-1.5 px-4 py-2 text-sm bg-blue-600 text-white hover:bg-blue-700 rounded-lg">
-            Next <ChevronRight size={14} />
+    <div className="p-4 bg-gray-100 min-h-screen">
+      {/* ── Header ── */}
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-bold text-gray-500 uppercase tracking-widest">Production Send Page</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <select value={cfg.send_mode} onChange={setE("send_mode")}
+            className="border border-gray-300 rounded px-2 py-1 text-xs bg-white font-bold focus:outline-none">
+            <option value="smtp">SMTP</option>
+            <option value="gmail_api">Gmail API</option>
+            <option value="mx_direct">MX Direct</option>
+          </select>
+          <button onClick={handleGenerate} disabled={generating}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-gray-700 text-white rounded hover:bg-gray-800 disabled:opacity-50">
+            <RefreshCw size={11} className={generating ? "animate-spin" : ""} />
+            {generating ? "Generating…" : "Generate Script"}
           </button>
-        )}
+          <button onClick={handleLaunch} disabled={launching}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 font-bold">
+            <SendIcon size={11} />
+            {launching ? "Launching…" : "LAUNCH"}
+          </button>
+        </div>
       </div>
+
+      {/* ── Row 1: Servers | Lists | Filter ── */}
+      <div className="grid grid-cols-3 gap-2 mb-2">
+        <Panel title={`Servers (${selGroups.length} Selected)`}>
+          <div className="space-y-0.5 max-h-28 overflow-y-auto">
+            {groups.length === 0 && <div className="text-xs text-gray-400 py-2 text-center">No groups</div>}
+            {groups.map((g) => (
+              <label key={g.id} className="flex items-center gap-1.5 cursor-pointer hover:bg-gray-50 px-1 py-0.5 rounded">
+                <input type="checkbox" checked={selGroups.includes(g.id)} onChange={() => toggleGroup(g.id)} className="w-3 h-3" />
+                <span className="text-xs text-gray-700">{g.name}</span>
+                <span className="ml-auto text-[10px] text-gray-400">{g.active_accounts ?? 0}</span>
+              </label>
+            ))}
+          </div>
+        </Panel>
+
+        <Panel title={`Email Lists (${selLists.length} Selected)`}>
+          <div className="space-y-0.5 max-h-28 overflow-y-auto">
+            {lists.length === 0 && <div className="text-xs text-gray-400 py-2 text-center">No lists</div>}
+            {lists.map((l) => (
+              <label key={l.id} className="flex items-center gap-1.5 cursor-pointer hover:bg-gray-50 px-1 py-0.5 rounded">
+                <input type="checkbox" checked={selLists.includes(l.id)} onChange={() => toggleList(l.id)} className="w-3 h-3" />
+                <span className="text-xs text-gray-700">{l.name}</span>
+                <span className="ml-auto text-[10px] text-gray-400">{l.total_count?.toLocaleString()}</span>
+              </label>
+            ))}
+          </div>
+        </Panel>
+
+        <Panel title="Filter Select">
+          <div className="space-y-1.5">
+            <Field label="Affiliate Network">
+              <select value={cfg.network_id} onChange={setE("network_id")} className={sel}>
+                <option value="">Select Affiliate Network…</option>
+                {networks.map((n) => <option key={n.id} value={n.id}>{n.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Offer">
+              <select value={cfg.offer_id} onChange={setE("offer_id")} className={sel}>
+                <option value="">Select Offer…</option>
+                {offers.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+              </select>
+            </Field>
+          </div>
+        </Panel>
+      </div>
+
+      {/* ── Row 2: Content settings ── */}
+      <div className="grid grid-cols-6 gap-2 mb-2">
+        <SmallPanel>
+          <Field label="Content Type">
+            <select value={cfg.content_type} onChange={setE("content_type")} className={sel}>
+              <option value="text/html">text/html</option>
+              <option value="text/plain">text/plain</option>
+            </select>
+          </Field>
+        </SmallPanel>
+        <SmallPanel>
+          <Field label="Charset">
+            <select value={cfg.charset} onChange={setE("charset")} className={sel}>
+              <option>UTF-8</option>
+              <option>ISO-8859-1</option>
+              <option>Windows-1252</option>
+            </select>
+          </Field>
+        </SmallPanel>
+        <SmallPanel>
+          <Field label="Transfer Enc">
+            <select value={cfg.transfer_enc} onChange={setE("transfer_enc")} className={sel}>
+              <option value="7bit">7bit</option>
+              <option value="quoted-printable">quoted-printable</option>
+              <option value="base64">base64</option>
+            </select>
+          </Field>
+        </SmallPanel>
+        <SmallPanel>
+          <Field label="Process Type">
+            <select value={cfg.process_type} onChange={setE("process_type")} className={sel}>
+              <option value="batch">Batch</option>
+              <option value="xdelay">Batch / X-Delay</option>
+            </select>
+          </Field>
+        </SmallPanel>
+        <SmallPanel>
+          <Field label="Link Type">
+            <select value={cfg.link_type} onChange={setE("link_type")} className={sel}>
+              <option value="routing">Routing</option>
+              <option value="direct">Direct</option>
+            </select>
+          </Field>
+        </SmallPanel>
+        <SmallPanel>
+          <Field label="Track Opens">
+            <div className="flex gap-1 items-center pt-0.5">
+              <Toggle value={cfg.track_opens} onChange={set("track_opens")} />
+            </div>
+          </Field>
+        </SmallPanel>
+      </div>
+
+      {/* ── Row 3: Numeric config ── */}
+      <div className="grid grid-cols-7 gap-2 mb-2">
+        <SmallPanel>
+          <Field label="Batch">
+            <input type="number" value={cfg.batch} onChange={setE("batch")} className={inp} />
+          </Field>
+        </SmallPanel>
+        <SmallPanel>
+          <Field label="X-Delay (Ms)">
+            <input type="number" value={cfg.xdelay_ms} onChange={setE("xdelay_ms")} className={inp} />
+          </Field>
+        </SmallPanel>
+        <SmallPanel>
+          <Field label="Max Workers">
+            <input type="number" value={cfg.max_workers} onChange={setE("max_workers")} className={inp} />
+          </Field>
+        </SmallPanel>
+        <SmallPanel>
+          <Field label="Test After">
+            <input type="number" value={cfg.test_after} onChange={setE("test_after")} className={inp} />
+          </Field>
+        </SmallPanel>
+        <SmallPanel>
+          <Field label="Headers Rotation">
+            <input type="number" value={cfg.headers_rot} onChange={setE("headers_rot")} className={inp} />
+          </Field>
+        </SmallPanel>
+        <SmallPanel>
+          <Field label="Body Rotation">
+            <input type="number" value={cfg.body_rot} onChange={setE("body_rot")} className={inp} />
+          </Field>
+        </SmallPanel>
+        <SmallPanel>
+          <Field label="Rcpt Rotation">
+            <input type="number" value={cfg.rcpt_rotation} onChange={setE("rcpt_rotation")} className={inp} />
+          </Field>
+        </SmallPanel>
+      </div>
+
+      {/* ── Row 4: Return path + domain + combination ── */}
+      <div className="grid grid-cols-4 gap-2 mb-2">
+        <SmallPanel>
+          <Field label="Return Path">
+            <input value={cfg.return_path} onChange={setE("return_path")} className={inp} />
+          </Field>
+        </SmallPanel>
+        <SmallPanel>
+          <Field label="Static Domain">
+            <input value={cfg.static_domain} onChange={setE("static_domain")} className={inp} />
+          </Field>
+        </SmallPanel>
+        <SmallPanel>
+          <Field label="Combination">
+            <div className="flex gap-1 items-center pt-0.5">
+              <Toggle value={cfg.combination} onChange={set("combination")} />
+            </div>
+          </Field>
+        </SmallPanel>
+        <SmallPanel>
+          <Field label="Random Dots">
+            <div className="flex items-center gap-2 pt-0.5">
+              <Toggle value={cfg.random_dots} onChange={set("random_dots")} />
+              <input type="number" value={cfg.nbre_dots} onChange={setE("nbre_dots")} className={`${inp} w-14`} placeholder="2" />
+              <span className="text-[10px] text-gray-400">dots</span>
+            </div>
+          </Field>
+        </SmallPanel>
+      </div>
+
+      {/* ── Row 5: FromNames | Subjects ── */}
+      <div className="grid grid-cols-2 gap-2 mb-2">
+        <Panel title="FromNames (one per line)">
+          <textarea rows={3} value={cfg.from_names} onChange={setE("from_names")}
+            placeholder={"John Smith\nJane Doe\nSupport Team"} className={ta} />
+        </Panel>
+        <Panel title="Subjects (one per line)">
+          <textarea rows={3} value={cfg.subjects} onChange={setE("subjects")}
+            placeholder={"Important: [first_name], check this\nRe: Your request [an_5]\nUrgent update for you"} className={ta} />
+        </Panel>
+      </div>
+
+      {/* ── Row 6: Header Template | HTML Body ── */}
+      <div className="grid grid-cols-2 gap-2 mb-2">
+        <Panel title="Email Header Template">
+          <textarea rows={9} value={cfg.header_tpl} onChange={setE("header_tpl")} className={ta} />
+        </Panel>
+        <Panel title="HTML Body">
+          <textarea rows={9} value={cfg.body_html} onChange={setE("body_html")} className={ta} />
+        </Panel>
+      </div>
+
+      {/* ── Row 7: Placeholders | Direct Recipients | Negative ── */}
+      <div className="grid grid-cols-3 gap-2 mb-2">
+        <Panel title="Placeholders (one per line)">
+          <textarea rows={5} value={cfg.placeholders} onChange={setE("placeholders")}
+            placeholder={"value1\nvalue2\nvalue3"} className={ta} />
+        </Panel>
+        <Panel title="Direct Recipients (paste emails)">
+          <textarea rows={5} value={cfg.direct_recipients} onChange={setE("direct_recipients")}
+            placeholder={"user@example.com\nother@domain.com"} className={ta} />
+          <div className="text-[10px] text-gray-400 mt-1">
+            {cfg.direct_recipients ? cfg.direct_recipients.split("\n").filter(Boolean).length : 0} lines
+          </div>
+        </Panel>
+        <Panel title="Negative Content (spam bypass)">
+          <textarea rows={5} value={cfg.negative_content} onChange={setE("negative_content")}
+            placeholder="Hidden news text for spam filter bypass…" className={ta} />
+        </Panel>
+      </div>
+
+      {/* ── Row 8: Email List Filters ── */}
+      <Panel title="Email List Filters" className="mb-2">
+        <div className="flex flex-wrap gap-4 py-1">
+          {[
+            ["fresh",    "Fresh"],
+            ["clean",    "Clean"],
+            ["openers",  "Openers"],
+            ["clickers", "Clickers"],
+            ["leaders",  "Leaders"],
+            ["unsubs",   "Unsubs"],
+            ["optouts",  "OptOuts"],
+            ["seeds",    "Seeds"],
+          ].map(([key, label]) => (
+            <div key={key} className="flex items-center gap-2">
+              <span className="text-xs text-gray-600 w-16">{label}</span>
+              <Toggle value={cfg[`filter_${key}`]} onChange={set(`filter_${key}`)} />
+            </div>
+          ))}
+        </div>
+      </Panel>
+
+      {/* ── Row 9: Test + Statistics ── */}
+      <div className="grid grid-cols-2 gap-2 mb-2">
+        <Panel title="Test Email">
+          <div className="flex gap-2 mb-2">
+            <input type="email" value={cfg.test_email} onChange={setE("test_email")}
+              placeholder="test@example.com"
+              className={`${inp} flex-1`} />
+            <button onClick={handleTest} disabled={!cfg.test_email || testing}
+              className="px-3 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 whitespace-nowrap">
+              {testing ? "Sending…" : "Send Test"}
+            </button>
+          </div>
+          {testResult && (
+            <div className={`p-2 rounded text-xs ${testResult.success ? "bg-green-50 text-green-800 border border-green-100" : "bg-red-50 text-red-800 border border-red-100"}`}>
+              {testResult.success ? `✓ Sent via ${testResult.mx}` : `✗ ${testResult.error}`}
+            </div>
+          )}
+        </Panel>
+
+        <Panel title="Send Statistics">
+          {scriptMeta ? (
+            <div className="grid grid-cols-3 gap-2">
+              <Stat label="Clean Recipients" value={scriptMeta.final_count?.toLocaleString()} color="text-gray-900" />
+              <Stat label="Filtered" value={scriptMeta.filtered_count} color="text-orange-600" />
+              <Stat label="Active Accounts" value={scriptMeta.accounts_count} color="text-blue-600" />
+            </div>
+          ) : (
+            <div className="text-xs text-gray-400 py-4 text-center">Generate script to see statistics</div>
+          )}
+        </Panel>
+      </div>
+
+      {/* ── Script Output ── */}
+      {script && (
+        <Panel title="Generated Python Script">
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-2">
+              <button onClick={copyScript}
+                className={`flex items-center gap-1 px-2 py-1 text-xs rounded transition-colors ${copied ? "bg-green-100 text-green-700" : "bg-gray-100 hover:bg-gray-200 text-gray-600"}`}>
+                {copied ? <CheckCircle size={11} /> : <Copy size={11} />}
+                {copied ? "Copied!" : "Copy Script"}
+              </button>
+              <a href="https://console.cloud.google.com/cloudshelleditor" target="_blank" rel="noopener noreferrer"
+                className="flex items-center gap-1 px-2 py-1 text-xs bg-blue-50 text-blue-700 hover:bg-blue-100 rounded border border-blue-200">
+                <ExternalLink size={11} /> Open Cloud Console
+              </a>
+            </div>
+            <span className="text-[10px] text-gray-400">Paste into Cloud Shell → <code className="font-mono">python3 script.py</code></span>
+          </div>
+          <pre className="bg-gray-900 text-green-400 text-xs rounded p-3 overflow-auto max-h-72 font-mono">{script}</pre>
+        </Panel>
+      )}
     </div>
   );
 }
 
-function ReviewRow({ label, value }) {
+// ── sub-components ────────────────────────────────────────────────────────────
+function Panel({ title, children, className = "" }) {
   return (
-    <div className="flex items-center justify-between py-2 border-b border-gray-50 last:border-0">
-      <span className="text-sm text-gray-600">{label}</span>
-      <span className="text-sm font-medium text-gray-900">{value}</span>
+    <div className={`bg-white border border-gray-200 rounded p-2 ${className}`}>
+      {title && (
+        <div className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider border-b border-gray-100 pb-1 mb-2">
+          {title}
+        </div>
+      )}
+      {children}
+    </div>
+  );
+}
+
+function SmallPanel({ children }) {
+  return <div className="bg-white border border-gray-200 rounded p-2">{children}</div>;
+}
+
+function Stat({ label, value, color }) {
+  return (
+    <div className="text-center py-2">
+      <div className={`text-xl font-bold ${color}`}>{value ?? "—"}</div>
+      <div className="text-[10px] text-gray-400 mt-0.5">{label}</div>
     </div>
   );
 }
