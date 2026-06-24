@@ -47,7 +47,7 @@ export default function Send() {
 
   // -- config fields
   const [cfg, setCfg] = useState({
-    send_mode:       "smtp",          // smtp | gmail_api
+    send_mode:       "mx_direct",     // mx_direct (basic, no account) | smtp | mx_proxy
     content_type:    "text/html",
     charset:         "UTF-8",
     transfer_enc:    "7bit",
@@ -157,7 +157,10 @@ export default function Send() {
     try {
       let cid = campaignId;
       if (!cid) cid = await saveCampaign();
-      const { data } = await api.post(`/campaigns/${cid}/generate-script`);
+      const direct = cfg.direct_recipients
+        ? cfg.direct_recipients.split("\n").map((s) => s.trim()).filter(Boolean)
+        : [];
+      const { data } = await api.post(`/campaigns/${cid}/generate-script`, { direct_recipients: direct });
       setScript(data.script);
       setScriptMeta(data);
     } catch (e) {
@@ -198,9 +201,9 @@ export default function Send() {
         <div className="flex items-center gap-2">
           <select value={cfg.send_mode} onChange={setE("send_mode")}
             className="border border-gray-300 rounded px-2 py-1 text-xs bg-white font-bold focus:outline-none">
-            <option value="smtp">SMTP</option>
-            <option value="gmail_api">Gmail API</option>
-            <option value="mx_direct">MX Direct</option>
+            <option value="mx_direct">MX Direct (basic — no account)</option>
+            <option value="smtp">SMTP (Gmail + proxy)</option>
+            <option value="mx_proxy">MX via Proxy</option>
           </select>
           <button onClick={handleGenerate} disabled={generating}
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-gray-700 text-white rounded hover:bg-gray-800 disabled:opacity-50">

@@ -48,6 +48,10 @@ class TestEmailRequest(BaseModel):
     to_email: str
 
 
+class GenerateScriptRequest(BaseModel):
+    direct_recipients: list[str] = []   # pasted emails, bypass lists
+
+
 def campaign_to_dict(c: Campaign) -> dict:
     return {
         "id": c.id,
@@ -186,7 +190,12 @@ async def send_test_email(campaign_id: int, body: TestEmailRequest, db: DB, curr
 
 
 @router.post("/{campaign_id}/generate-script")
-async def generate_script(campaign_id: int, db: DB, current_user: CurrentUser):
+async def generate_script(
+    campaign_id: int,
+    db: DB,
+    current_user: CurrentUser,
+    body: GenerateScriptRequest | None = None,
+):
     from app.services.script_gen import generate_campaign_script
     from app.core.security import decrypt_secret
 
@@ -199,35 +208,59 @@ async def generate_script(campaign_id: int, db: DB, current_user: CurrentUser):
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
-    # Collect accounts from groups
-    group_ids = [g.group_id for g in campaign.account_groups]
-    acc_result = await db.execute(
-        select(SenderAccount)
-        .where(SenderAccount.group_id.in_(group_ids), SenderAccount.status == "active", SenderAccount.is_deleted == False)
-    )
-    accounts = acc_result.scalars().all()
+    mode = (campaign.send_mode or "mx_direct").lower()
 
-    accounts_data = [
-        {
-            "id": a.id,
-            "email": a.email,
-            "password": decrypt_secret(a.password),
-            "proxy_host": a.proxy_host,
-            "proxy_port": a.proxy_port,
-            "proxy_user": a.proxy_user,
-            "proxy_pass": decrypt_secret(a.proxy_pass) if a.proxy_pass else None,
-            "proxy_geo": a.proxy_geo,
-        }
-        for a in accounts
-    ]
+    # Collect accounts from groups (only needed for proxy/smtp modes)
+    group_ids = [g.group_id for g in campaign.account_groups]
+    accounts_data = []
+    if group_ids:
+        acc_result = await db.execute(
+            select(SenderAccount)
+            .where(SenderAccount.group_id.in_(group_ids), SenderAccount.status == "active", SenderAccount.is_deleted == False)
+        )
+        accounts = acc_result.scalars().all()
+        accounts_data = [
+            {
+                "id": a.id,
+                "email": a.email,
+                "password": decrypt_secret(a.password),
+                "proxy_host": a.proxy_host,
+                "proxy_port": a.proxy_port,
+                "proxy_user": a.proxy_user,
+                "proxy_pass": decrypt_secret(a.proxy_pass) if a.proxy_pass else None,
+                "proxy_geo": a.proxy_geo,
+            }
+            for a in accounts
+        ]
+
+    # Proxy/smtp modes require at least one account with a proxy
+    if mode in ("smtp", "mx_proxy", "gmail_api") and not accounts_data:
+        raise HTTPException(
+            status_code=400,
+            detail="This send mode needs sender accounts with proxies. Select a Server group, or switch to MX Direct (basic) which needs none.",
+        )
 
     # Collect recipients from lists
     list_ids = [l.list_id for l in campaign.recipient_lists]
-    rec_result = await db.execute(
-        select(Recipient.email, Recipient.name)
-        .where(Recipient.list_id.in_(list_ids), Recipient.status == "active")
-    )
-    recipients = [{"email": r.email, "name": r.name} for r in rec_result.all()]
+    recipients = []
+    if list_ids:
+        rec_result = await db.execute(
+            select(Recipient.email, Recipient.name)
+            .where(Recipient.list_id.in_(list_ids), Recipient.status == "active")
+        )
+        recipients = [{"email": r.email, "name": r.name} for r in rec_result.all()]
+
+    # Merge pasted direct recipients
+    if body and body.direct_recipients:
+        seen = {r["email"].lower() for r in recipients}
+        for raw in body.direct_recipients:
+            em = raw.strip()
+            if em and "@" in em and em.lower() not in seen:
+                recipients.append({"email": em, "name": None})
+                seen.add(em.lower())
+
+    if not recipients:
+        raise HTTPException(status_code=400, detail="No recipients — select a list or paste direct recipients.")
 
     # Filter suppression + blacklist
     if campaign.offer_id:
