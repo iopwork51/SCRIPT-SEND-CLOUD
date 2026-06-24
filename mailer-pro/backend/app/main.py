@@ -89,4 +89,4 @@ app.include_router(campaigns.router, prefix="/api")
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "app": settings.APP_NAME}
+    return {"status": "ok", "app": settings.APP_NAME, "version": "v4-seed-reset"}
