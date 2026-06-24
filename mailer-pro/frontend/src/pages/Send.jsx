@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import api from "../lib/api";
-import { Send as SendIcon, Copy, CheckCircle, ExternalLink, RefreshCw } from "lucide-react";
+import { Send as SendIcon, Copy, CheckCircle, ExternalLink, RefreshCw, HelpCircle, ChevronDown, X } from "lucide-react";
 
 // ── tiny helpers ──────────────────────────────────────────────────────────────
 const Toggle = ({ value, onChange, label }) => (
@@ -78,8 +78,6 @@ export default function Send() {
     track_opens:     true,
     headers_rot:     1,
     body_rot:        1,
-    return_path:     "return@[domain]",
-    static_domain:   "[domain]",
     from_names:      "",              // one per line
     subjects:        "",              // one per line
     header_tpl:      `MIME-Version: 1.0\nMessage-Id: <[a_7][n_6][n_3][a_3]@[domain]>\nFrom: [a_5] <[a_7]@[domain]>\nSubject: [p|server] [an_5]\nReply-To: reply_to@[domain]\nTo: [email]\nContent-Transfer-Encoding: [content_transfer_encoding]\nContent-Type: [content_type]; charset=[charset]\nDate: [mail_date]`,
@@ -115,6 +113,9 @@ export default function Send() {
   const [generating, setGenerating] = useState(false);
   const [campaignId, setCampaignId] = useState(null);
   const [copied, setCopied]       = useState(false);
+  const [showTags, setShowTags]   = useState(false);
+  const [openPh, setOpenPh]       = useState(false);
+  const [openNeg, setOpenNeg]     = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -385,18 +386,8 @@ export default function Send() {
         </SmallPanel>
       </div>
 
-      {/* ── Row 4: Return path + domain + combination ── */}
+      {/* ── Row 4: Combination + Random Dots ── */}
       <div className="grid grid-cols-4 gap-2 mb-2">
-        <SmallPanel>
-          <Field label="Return Path">
-            <input value={cfg.return_path} onChange={setE("return_path")} className={inp} />
-          </Field>
-        </SmallPanel>
-        <SmallPanel>
-          <Field label="Static Domain">
-            <input value={cfg.static_domain} onChange={setE("static_domain")} className={inp} />
-          </Field>
-        </SmallPanel>
         <SmallPanel>
           <Field label="Combination">
             <div className="flex gap-1 items-center pt-0.5">
@@ -437,28 +428,24 @@ export default function Send() {
         </Panel>
       </div>
 
-      {/* ── Tags Help ── */}
-      <Panel title="Tags Help — use these in Header, Subject, From & Body" className="mb-2">
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-1 text-[11px]">
-          {TAGS.map(([tag, desc]) => (
-            <div key={tag} className="flex items-center gap-2">
-              <code className="bg-gray-100 text-blue-700 px-1.5 py-0.5 rounded font-mono">{tag}</code>
-              <span className="text-gray-500">{desc}</span>
-            </div>
-          ))}
-        </div>
-      </Panel>
+      {/* ── Tags Help button (opens popup) ── */}
+      <div className="flex justify-end mb-2">
+        <button onClick={() => setShowTags(true)}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-white border border-gray-300 rounded hover:bg-gray-50 text-gray-600">
+          <HelpCircle size={12} /> Tags Help
+        </button>
+      </div>
 
-      {/* ── Row 7: Placeholders | Negative ── */}
+      {/* ── Row 7: Placeholders | Negative (collapsible) ── */}
       <div className="grid grid-cols-2 gap-2 mb-2">
-        <Panel title="Placeholders (one per line)">
+        <Collapsible title="Placeholders (one per line)" open={openPh} onToggle={() => setOpenPh((v) => !v)}>
           <textarea rows={4} value={cfg.placeholders} onChange={setE("placeholders")}
             placeholder={"value1\nvalue2\nvalue3"} className={ta} />
-        </Panel>
-        <Panel title="Negative / Filler Content ([negative] tag)">
+        </Collapsible>
+        <Collapsible title="Negative / Filler Content ([negative] tag)" open={openNeg} onToggle={() => setOpenNeg((v) => !v)}>
           <textarea rows={4} value={cfg.negative_content} onChange={setE("negative_content")}
             placeholder="Text injected at the [negative] tag…" className={ta} />
-        </Panel>
+        </Collapsible>
       </div>
 
       {/* ── Row 8: Email List Filters ── */}
@@ -560,6 +547,41 @@ export default function Send() {
           <pre className="bg-gray-900 text-green-400 text-xs rounded p-3 overflow-auto max-h-72 font-mono">{script}</pre>
         </Panel>
       )}
+
+      {/* ── Tags Help popup ── */}
+      {showTags && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => setShowTags(false)}>
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-2xl p-6 max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="font-semibold text-gray-900">Tags Help — use these in Header, Subject, From & Body</h2>
+              <button onClick={() => setShowTags(false)} className="text-gray-400 hover:text-gray-600">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-2">
+              {TAGS.map(([tag, desc]) => (
+                <div key={tag} className="flex items-center gap-2 text-xs">
+                  <code className="bg-gray-100 text-blue-700 px-1.5 py-0.5 rounded font-mono whitespace-nowrap">{tag}</code>
+                  <span className="text-gray-500">{desc}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Collapsible({ title, open, onToggle, children }) {
+  return (
+    <div className="bg-white border border-gray-200 rounded">
+      <button onClick={onToggle}
+        className="w-full flex items-center justify-between px-2 py-2 text-[10px] font-semibold text-gray-500 uppercase tracking-wider hover:bg-gray-50">
+        {title}
+        <ChevronDown size={14} className={`transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && <div className="p-2 pt-0">{children}</div>}
     </div>
   );
 }
