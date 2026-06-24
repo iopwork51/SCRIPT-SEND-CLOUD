@@ -33,10 +33,29 @@ const inp =
 const ta =
   "w-full border border-gray-300 rounded px-2 py-1 text-xs font-mono resize-none focus:outline-none focus:border-blue-400";
 
+// Tag reference shown in the Tags Help panel
+const TAGS = [
+  ["[email]", "recipient email address"],
+  ["[first_name]", "name before @ (or list name)"],
+  ["[domain]", "your sending domain"],
+  ["[mail_date]", "today's date (YYYY-MM-DD)"],
+  ["{a_5}", "random letters, fresh each email (n=length)"],
+  ["{n_4}", "random digits, fresh each email"],
+  ["{an_8}", "random letters+digits, fresh each email"],
+  ["[a_5]", "random letters, FIXED for whole run"],
+  ["[al_5]", "random lowercase letters (fixed)"],
+  ["[au_5]", "random UPPERCASE letters (fixed)"],
+  ["[an_10]", "random letters+digits (fixed)"],
+  ["[n_6]", "random digits (fixed)"],
+  ["[LinksPlaceholder]", "rotates through your links list"],
+  ["[negative]", "inserts your Negative/Filler content"],
+];
+
 // ── component ─────────────────────────────────────────────────────────────────
 export default function Send() {
   // -- data
   const [groups, setGroups]     = useState([]);
+  const [accounts, setAccounts] = useState([]);
   const [lists, setLists]       = useState([]);
   const [offers, setOffers]     = useState([]);
   const [networks, setNetworks] = useState([]);
@@ -100,11 +119,13 @@ export default function Send() {
   useEffect(() => {
     Promise.all([
       api.get("/groups"),
+      api.get("/accounts?page_size=500"),
       api.get("/recipients/lists"),
       api.get("/offers"),
       api.get("/affiliates"),
-    ]).then(([g, l, o, n]) => {
+    ]).then(([g, a, l, o, n]) => {
       setGroups(g.data);
+      setAccounts(a.data);
       setLists(l.data);
       setOffers(o.data);
       setNetworks(n.data);
@@ -115,6 +136,9 @@ export default function Send() {
   const setE = (k) => (e) => setCfg((c) => ({ ...c, [k]: e.target.value }));
   const toggleGroup = (id) => setSelGroups((p) => p.includes(id) ? p.filter((x) => x !== id) : [...p, id]);
   const toggleList  = (id) => setSelLists((p)  => p.includes(id) ? p.filter((x) => x !== id) : [...p, id]);
+
+  // accounts that belong to the selected groups
+  const groupAccounts = accounts.filter((a) => selGroups.includes(a.group_id));
 
   const buildPayload = () => ({
     name: `Campaign ${new Date().toLocaleString()}`,
@@ -218,31 +242,36 @@ export default function Send() {
         </div>
       </div>
 
-      {/* ── Row 1: Servers | Lists | Filter ── */}
+      {/* ── Row 1: Groups | Accounts (from groups) | Filter ── */}
       <div className="grid grid-cols-3 gap-2 mb-2">
-        <Panel title={`Servers (${selGroups.length} Selected)`}>
+        <Panel title={`Groups (${selGroups.length} Selected)`}>
           <div className="space-y-0.5 max-h-28 overflow-y-auto">
             {groups.length === 0 && <div className="text-xs text-gray-400 py-2 text-center">No groups</div>}
             {groups.map((g) => (
               <label key={g.id} className="flex items-center gap-1.5 cursor-pointer hover:bg-gray-50 px-1 py-0.5 rounded">
                 <input type="checkbox" checked={selGroups.includes(g.id)} onChange={() => toggleGroup(g.id)} className="w-3 h-3" />
                 <span className="text-xs text-gray-700">{g.name}</span>
-                <span className="ml-auto text-[10px] text-gray-400">{g.active_accounts ?? 0}</span>
+                <span className="ml-auto text-[10px] text-gray-400">{g.active_accounts ?? g.total_accounts ?? 0} acc</span>
               </label>
             ))}
           </div>
         </Panel>
 
-        <Panel title={`Email Lists (${selLists.length} Selected)`}>
+        <Panel title={`Accounts in Selected Groups (${groupAccounts.length})`}>
           <div className="space-y-0.5 max-h-28 overflow-y-auto">
-            {lists.length === 0 && <div className="text-xs text-gray-400 py-2 text-center">No lists</div>}
-            {lists.map((l) => (
-              <label key={l.id} className="flex items-center gap-1.5 cursor-pointer hover:bg-gray-50 px-1 py-0.5 rounded">
-                <input type="checkbox" checked={selLists.includes(l.id)} onChange={() => toggleList(l.id)} className="w-3 h-3" />
-                <span className="text-xs text-gray-700">{l.name}</span>
-                <span className="ml-auto text-[10px] text-gray-400">{l.total_count?.toLocaleString()}</span>
-              </label>
-            ))}
+            {selGroups.length === 0 ? (
+              <div className="text-xs text-gray-400 py-2 text-center">Select a group to see its accounts</div>
+            ) : groupAccounts.length === 0 ? (
+              <div className="text-xs text-gray-400 py-2 text-center">No accounts in these groups</div>
+            ) : (
+              groupAccounts.map((a) => (
+                <div key={a.id} className="flex items-center gap-1.5 px-1 py-0.5 rounded hover:bg-gray-50">
+                  <span className={`w-1.5 h-1.5 rounded-full ${a.status === "active" ? "bg-green-500" : a.status === "testing" ? "bg-blue-400" : "bg-red-400"}`} />
+                  <span className="text-xs text-gray-700 truncate">{a.email}</span>
+                  <span className="ml-auto text-[10px] text-gray-400">{a.proxy_geo || "—"}</span>
+                </div>
+              ))
+            )}
           </div>
         </Panel>
 
@@ -408,22 +437,27 @@ export default function Send() {
         </Panel>
       </div>
 
-      {/* ── Row 7: Placeholders | Direct Recipients | Negative ── */}
-      <div className="grid grid-cols-3 gap-2 mb-2">
+      {/* ── Tags Help ── */}
+      <Panel title="Tags Help — use these in Header, Subject, From & Body" className="mb-2">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-1 text-[11px]">
+          {TAGS.map(([tag, desc]) => (
+            <div key={tag} className="flex items-center gap-2">
+              <code className="bg-gray-100 text-blue-700 px-1.5 py-0.5 rounded font-mono">{tag}</code>
+              <span className="text-gray-500">{desc}</span>
+            </div>
+          ))}
+        </div>
+      </Panel>
+
+      {/* ── Row 7: Placeholders | Negative ── */}
+      <div className="grid grid-cols-2 gap-2 mb-2">
         <Panel title="Placeholders (one per line)">
-          <textarea rows={5} value={cfg.placeholders} onChange={setE("placeholders")}
+          <textarea rows={4} value={cfg.placeholders} onChange={setE("placeholders")}
             placeholder={"value1\nvalue2\nvalue3"} className={ta} />
         </Panel>
-        <Panel title="Direct Recipients (paste emails)">
-          <textarea rows={5} value={cfg.direct_recipients} onChange={setE("direct_recipients")}
-            placeholder={"user@example.com\nother@domain.com"} className={ta} />
-          <div className="text-[10px] text-gray-400 mt-1">
-            {cfg.direct_recipients ? cfg.direct_recipients.split("\n").filter(Boolean).length : 0} lines
-          </div>
-        </Panel>
-        <Panel title="Negative Content (spam bypass)">
-          <textarea rows={5} value={cfg.negative_content} onChange={setE("negative_content")}
-            placeholder="Hidden news text for spam filter bypass…" className={ta} />
+        <Panel title="Negative / Filler Content ([negative] tag)">
+          <textarea rows={4} value={cfg.negative_content} onChange={setE("negative_content")}
+            placeholder="Text injected at the [negative] tag…" className={ta} />
         </Panel>
       </div>
 
@@ -447,6 +481,32 @@ export default function Send() {
           ))}
         </div>
       </Panel>
+
+      {/* ── Recipients (bottom): Email Lists + Direct ── */}
+      <div className="grid grid-cols-2 gap-2 mb-2">
+        <Panel title={`Email Lists — Recipients (${selLists.length} Selected)`}>
+          <div className="space-y-0.5 max-h-40 overflow-y-auto">
+            {lists.length === 0 && <div className="text-xs text-gray-400 py-2 text-center">No lists</div>}
+            {lists.map((l) => (
+              <label key={l.id} className="flex items-center gap-1.5 cursor-pointer hover:bg-gray-50 px-1 py-0.5 rounded">
+                <input type="checkbox" checked={selLists.includes(l.id)} onChange={() => toggleList(l.id)} className="w-3 h-3" />
+                <span className="text-xs text-gray-700">{l.name}</span>
+                <span className="ml-auto text-[10px] text-gray-400">{l.total_count?.toLocaleString()}</span>
+              </label>
+            ))}
+          </div>
+          <div className="text-[10px] text-gray-400 mt-1 border-t border-gray-100 pt-1">
+            Selected total: {lists.filter((l) => selLists.includes(l.id)).reduce((s, l) => s + (l.total_count || 0), 0).toLocaleString()} recipients
+          </div>
+        </Panel>
+        <Panel title="Direct Recipients (paste emails — one per line)">
+          <textarea rows={6} value={cfg.direct_recipients} onChange={setE("direct_recipients")}
+            placeholder={"user@example.com\nother@domain.com"} className={ta} />
+          <div className="text-[10px] text-gray-400 mt-1">
+            {cfg.direct_recipients ? cfg.direct_recipients.split("\n").filter(Boolean).length : 0} pasted
+          </div>
+        </Panel>
+      </div>
 
       {/* ── Row 9: Test + Statistics ── */}
       <div className="grid grid-cols-2 gap-2 mb-2">
