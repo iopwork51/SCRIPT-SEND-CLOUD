@@ -200,37 +200,43 @@ async def get_proxy_from_pool(geo: str, db) -> Optional[dict]:
 
 # ── Proxy connectivity test ───────────────────────────────────────────────────
 
-async def test_proxy_connection(proxy: dict) -> dict:
-    ptype = proxy.get("type", "socks5")
-    user = proxy.get("user") or proxy.get("username")
-    pw = proxy.get("pass") or proxy.get("password")
-
-    if ptype == "socks5":
-        proxy_url = f"socks5://{user}:{pw}@{proxy['host']}:{proxy['port']}"
-    else:
-        proxy_url = f"http://{user}:{pw}@{proxy['host']}:{proxy['port']}"
-
+async def _tcp_check(host: str, port: int, timeout: float = 6.0) -> bool:
+    """TCP-only check — connects directly to the proxy gateway, uses ZERO proxy GB."""
+    import asyncio
     try:
-        async with httpx.AsyncClient(
-            proxies={"http://": proxy_url, "https://": proxy_url},
-            timeout=15,
-        ) as client:
-            r = await client.get("http://ip-api.com/json")
-            data = r.json()
-            return {
-                "working": True,
-                "exit_ip": data.get("query"),
-                "exit_geo": data.get("countryCode"),
-                "isp": data.get("isp"),
-                "geo_matches": data.get("countryCode", "").upper() == proxy.get("geo", "").upper(),
-            }
-    except Exception as e:
-        return {"working": False, "error": str(e), "exit_ip": None, "exit_geo": None}
+        _, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, int(port)), timeout=timeout
+        )
+        writer.close()
+        await writer.wait_closed()
+        return True
+    except Exception:
+        return False
+
+
+async def test_proxy_connection(proxy: dict) -> dict:
+    """
+    Checks proxy reachability via TCP only (no HTTP through the proxy).
+    This uses ZERO proxy bandwidth — just a raw TCP handshake to the proxy host.
+    """
+    host = proxy.get("host")
+    port = proxy.get("port")
+    if not host or not port:
+        return {"working": False, "error": "Missing host or port"}
+
+    ok = await _tcp_check(host, int(port))
+    return {
+        "working": ok,
+        "error": None if ok else "TCP connect failed — proxy unreachable",
+        "exit_ip": None,   # not fetched (saves GB)
+        "exit_geo": None,
+        "geo_matches": None,
+    }
 
 
 async def test_proxy_by_id(proxy_id: int, db) -> dict:
+    """TCP-only test — zero proxy GB consumed."""
     from app.db.models.proxies import Proxy
-    from app.core.security import decrypt_secret
     from sqlalchemy import select
 
     result = await db.execute(select(Proxy).where(Proxy.id == proxy_id))
@@ -238,23 +244,12 @@ async def test_proxy_by_id(proxy_id: int, db) -> dict:
     if not p:
         return {"working": False, "error": "Proxy not found"}
 
-    proxy_dict = {
-        "host": p.host,
-        "port": p.port,
-        "user": p.username,
-        "pass": decrypt_secret(p.password) if p.password else None,
-        "geo": p.geo,
-        "type": p.proxy_type,
-    }
-    result_data = await test_proxy_connection(proxy_dict)
-
+    ok = await _tcp_check(p.host, p.port)
     p.last_tested = datetime.now(timezone.utc)
-    p.status = "active" if result_data["working"] else "failed"
-    if result_data.get("exit_ip"):
-        p.exit_ip = result_data["exit_ip"]
+    p.status = "active" if ok else "failed"
     await db.commit()
 
-    return result_data
+    return {"working": ok, "error": None if ok else "TCP connect failed"}
 
 
 # ── SMTP test via proxy ───────────────────────────────────────────────────────

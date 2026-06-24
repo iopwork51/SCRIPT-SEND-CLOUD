@@ -3,12 +3,14 @@ import api from "../lib/api";
 import { Plus, RefreshCw, Upload, Trash2, Activity, RotateCcw } from "lucide-react";
 
 const STATUS_BADGE = {
-  active: "bg-green-100 text-green-700",
+  active:      "bg-green-100 text-green-700",
   proxy_error: "bg-red-100 text-red-700",
-  smtp_blocked: "bg-orange-100 text-orange-700",
+  smtp_blocked:"bg-orange-100 text-orange-700",
   auth_failed: "bg-red-100 text-red-700",
-  testing: "bg-blue-100 text-blue-700",
+  testing:     "bg-blue-100 text-blue-700",
 };
+
+const GEOS = ["US","FR","GB","CA","DE","AU","NL","ES","IT","BR","PL","TR","IN","JP","SG"];
 
 export default function Accounts() {
   const [accounts, setAccounts] = useState([]);
@@ -19,8 +21,7 @@ export default function Accounts() {
   const [testingId, setTestingId] = useState(null);
   const [form, setForm] = useState({
     email: "", password: "", account_type: "gmail",
-    proxy_host: "", proxy_port: "", proxy_user: "", proxy_pass: "",
-    proxy_geo: "US", proxy_type: "webshare_gb", group_id: "", max_per_day: 500,
+    proxy_geo: "US", group_id: "", max_per_day: 500,
   });
   const [bulkCsv, setBulkCsv] = useState("");
   const [bulkGroupId, setBulkGroupId] = useState("");
@@ -37,17 +38,22 @@ export default function Accounts() {
 
   const handleAdd = async (e) => {
     e.preventDefault();
-    await api.post("/accounts", { ...form, proxy_port: parseInt(form.proxy_port) || null, group_id: form.group_id || null });
+    await api.post("/accounts", {
+      ...form,
+      group_id: form.group_id || null,
+      max_per_day: parseInt(form.max_per_day) || 500,
+    });
     setShowAdd(false);
-    setForm({ email: "", password: "", account_type: "gmail", proxy_host: "", proxy_port: "", proxy_user: "", proxy_pass: "", proxy_geo: "US", proxy_type: "webshare_gb", group_id: "", max_per_day: 500 });
+    setForm({ email: "", password: "", account_type: "gmail", proxy_geo: "US", group_id: "", max_per_day: 500 });
     load();
   };
 
   const handleBulk = async () => {
-    await api.post("/accounts/bulk", { csv_data: bulkCsv, group_id: bulkGroupId || null });
+    const res = await api.post("/accounts/bulk", { csv_data: bulkCsv, group_id: bulkGroupId || null });
     setShowBulk(false);
     setBulkCsv("");
     load();
+    if (res.data.errors?.length) alert("Errors:\n" + res.data.errors.join("\n"));
   };
 
   const testAccount = async (id) => {
@@ -88,11 +94,15 @@ export default function Accounts() {
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
         {loading ? (
           <div className="p-8 text-center text-gray-400 text-sm">Loading…</div>
+        ) : accounts.length === 0 ? (
+          <div className="p-8 text-center text-gray-400 text-sm">
+            No accounts yet. Add proxies first, then import accounts.
+          </div>
         ) : (
           <table className="w-full text-sm">
             <thead className="bg-gray-50">
               <tr>
-                {["Email", "Type", "Group", "Geo", "Status", "Daily Sent", "Last Check", "Actions"].map(h => (
+                {["Email", "Type", "Group", "Geo", "Proxy", "Status", "Daily Sent", "Last Check", "Actions"].map(h => (
                   <th key={h} className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">{h}</th>
                 ))}
               </tr>
@@ -103,7 +113,8 @@ export default function Accounts() {
                   <td className="px-4 py-3 font-medium text-gray-900 text-xs">{a.email}</td>
                   <td className="px-4 py-3 text-gray-500 text-xs">{a.account_type}</td>
                   <td className="px-4 py-3 text-gray-500 text-xs">{groups.find(g => g.id === a.group_id)?.name || "—"}</td>
-                  <td className="px-4 py-3 text-gray-500 text-xs">{a.proxy_geo || "—"}</td>
+                  <td className="px-4 py-3 text-xs font-medium text-gray-700">{a.proxy_geo || "—"}</td>
+                  <td className="px-4 py-3 text-xs text-gray-400 font-mono">{a.proxy_host ? `${a.proxy_host}:${a.proxy_port}` : <span className="text-red-400">no proxy</span>}</td>
                   <td className="px-4 py-3">
                     <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_BADGE[a.status] || "bg-gray-100 text-gray-600"}`}>{a.status}</span>
                   </td>
@@ -111,10 +122,10 @@ export default function Accounts() {
                   <td className="px-4 py-3 text-gray-400 text-xs">{a.last_health_check ? new Date(a.last_health_check).toLocaleTimeString() : "never"}</td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">
-                      <button onClick={() => testAccount(a.id)} disabled={testingId === a.id} title="Test" className="p-1 hover:text-blue-600 transition-colors">
+                      <button onClick={() => testAccount(a.id)} disabled={testingId === a.id} title="Test SMTP" className="p-1 hover:text-blue-600 transition-colors">
                         <RefreshCw size={13} className={testingId === a.id ? "animate-spin" : ""} />
                       </button>
-                      <button onClick={() => rotateProxy(a.id)} title="Rotate proxy" className="p-1 hover:text-green-600 transition-colors">
+                      <button onClick={() => rotateProxy(a.id)} title="Re-assign proxy" className="p-1 hover:text-green-600 transition-colors">
                         <RotateCcw size={13} />
                       </button>
                       <button onClick={() => deleteAccount(a.id)} title="Delete" className="p-1 hover:text-red-600 transition-colors">
@@ -132,19 +143,24 @@ export default function Accounts() {
       {/* Add Account Modal */}
       {showAdd && (
         <Modal title="Add Account" onClose={() => setShowAdd(false)}>
-          <form onSubmit={handleAdd} className="space-y-3">
+          <form onSubmit={handleAdd} className="space-y-4">
             <div className="grid grid-cols-2 gap-3">
               <Field label="Email" type="email" value={form.email} onChange={v => setForm(f => ({...f, email: v}))} required />
               <Field label="App Password" type="password" value={form.password} onChange={v => setForm(f => ({...f, password: v}))} required />
-              <Field label="Proxy Host" value={form.proxy_host} onChange={v => setForm(f => ({...f, proxy_host: v}))} />
-              <Field label="Proxy Port" type="number" value={form.proxy_port} onChange={v => setForm(f => ({...f, proxy_port: v}))} />
-              <Field label="Proxy User" value={form.proxy_user} onChange={v => setForm(f => ({...f, proxy_user: v}))} />
-              <Field label="Proxy Pass" type="password" value={form.proxy_pass} onChange={v => setForm(f => ({...f, proxy_pass: v}))} />
+            </div>
+
+            <div className="bg-blue-50 border border-blue-100 rounded-lg p-3 text-xs text-blue-700">
+              Proxy assigned automatically from pool based on geo selection.
+            </div>
+
+            <div className="grid grid-cols-3 gap-3">
               <SelectField label="Geo" value={form.proxy_geo} onChange={v => setForm(f => ({...f, proxy_geo: v}))}
-                options={["US","FR","GB","CA","DE","AU","NL","ES","IT","BR"]} />
+                options={GEOS} />
               <SelectField label="Group" value={form.group_id} onChange={v => setForm(f => ({...f, group_id: v}))}
                 options={groups.map(g => ({ value: g.id, label: g.name }))} placeholder="No group" />
+              <Field label="Max / Day" type="number" value={form.max_per_day} onChange={v => setForm(f => ({...f, max_per_day: v}))} />
             </div>
+
             <div className="flex justify-end gap-2 pt-2">
               <button type="button" onClick={() => setShowAdd(false)} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">Cancel</button>
               <button type="submit" className="px-3 py-1.5 text-sm bg-blue-600 text-white hover:bg-blue-700 rounded-lg">Save</button>
@@ -155,16 +171,12 @@ export default function Accounts() {
 
       {/* Bulk Import Modal */}
       {showBulk && (
-        <Modal title="Bulk Import (CSV)" onClose={() => setShowBulk(false)}>
+        <Modal title="Bulk Import" onClose={() => setShowBulk(false)}>
           <div className="space-y-2 mb-3">
             <div className="bg-blue-50 border border-blue-100 rounded-lg p-3">
-              <div className="text-xs font-semibold text-blue-700 mb-1">Short format — auto-assign proxy from pool:</div>
+              <div className="text-xs font-semibold text-blue-700 mb-1">Format — proxy auto-assigned from pool:</div>
               <div className="font-mono text-xs text-blue-800">email:password:geo</div>
-              <div className="font-mono text-xs text-gray-500 mt-1">john@gmail.com:AppPass1234:US</div>
-            </div>
-            <div className="bg-gray-50 border border-gray-100 rounded-lg p-3">
-              <div className="text-xs font-semibold text-gray-600 mb-1">Full format — specify proxy manually:</div>
-              <div className="font-mono text-xs text-gray-700">email:password:proxy_host:port:proxy_user:proxy_pass:geo:type</div>
+              <div className="font-mono text-xs text-gray-400 mt-1">john@gmail.com:AppPass1234:US</div>
             </div>
           </div>
           <textarea
@@ -172,7 +184,9 @@ export default function Accounts() {
             placeholder={"john@gmail.com:AppPass1234:US\njane@gmail.com:AppPass5678:FR"}
             className="w-full text-xs font-mono border border-gray-200 rounded-lg p-2 focus:outline-none focus:border-blue-400"
           />
-          <div className="flex justify-end gap-2 pt-2">
+          <SelectField label="Group (optional)" value={bulkGroupId} onChange={setBulkGroupId}
+            options={groups.map(g => ({ value: g.id, label: g.name }))} placeholder="No group" />
+          <div className="flex justify-end gap-2 pt-3">
             <button onClick={() => setShowBulk(false)} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">Cancel</button>
             <button onClick={handleBulk} className="px-3 py-1.5 text-sm bg-blue-600 text-white hover:bg-blue-700 rounded-lg">Import</button>
           </div>
@@ -185,7 +199,7 @@ export default function Accounts() {
 function Modal({ title, onClose, children }) {
   return (
     <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-white rounded-xl shadow-xl w-full max-w-lg p-6" onClick={e => e.stopPropagation()}>
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-4">
           <h2 className="font-semibold text-gray-900">{title}</h2>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-lg">&times;</button>

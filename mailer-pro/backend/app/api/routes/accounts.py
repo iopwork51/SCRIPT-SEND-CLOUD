@@ -1,7 +1,6 @@
 from fastapi import APIRouter, HTTPException, UploadFile, File, BackgroundTasks
 from pydantic import BaseModel
-from sqlalchemy import select, func
-from sqlalchemy.orm import selectinload
+from sqlalchemy import select
 
 from app.api.deps import CurrentUser, DB
 from app.core.security import encrypt_secret, decrypt_secret
@@ -14,24 +13,14 @@ class AccountCreate(BaseModel):
     email: str
     password: str
     account_type: str = "gmail"
-    proxy_host: str | None = None
-    proxy_port: int | None = None
-    proxy_user: str | None = None
-    proxy_pass: str | None = None
-    proxy_geo: str | None = None
-    proxy_type: str = "webshare_gb"
+    proxy_geo: str = "US"          # auto-assigns proxy from pool for this geo
     group_id: int | None = None
     max_per_day: int = 500
 
 
 class AccountUpdate(BaseModel):
     account_type: str | None = None
-    proxy_host: str | None = None
-    proxy_port: int | None = None
-    proxy_user: str | None = None
-    proxy_pass: str | None = None
-    proxy_geo: str | None = None
-    proxy_type: str | None = None
+    proxy_geo: str | None = None   # re-assign proxy to a different geo
     group_id: int | None = None
     max_per_day: int | None = None
     status: str | None = None
@@ -83,20 +72,24 @@ async def list_accounts(
 
 @router.post("", status_code=201)
 async def create_account(body: AccountCreate, db: DB, current_user: CurrentUser):
+    from app.services.proxy import get_proxy_from_pool
+
     existing = await db.execute(select(SenderAccount).where(SenderAccount.email == body.email))
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Account already exists")
+
+    proxy = await get_proxy_from_pool(body.proxy_geo, db)
 
     account = SenderAccount(
         email=body.email,
         password=encrypt_secret(body.password),
         account_type=body.account_type,
-        proxy_host=body.proxy_host,
-        proxy_port=body.proxy_port,
-        proxy_user=body.proxy_user,
-        proxy_pass=encrypt_secret(body.proxy_pass) if body.proxy_pass else None,
-        proxy_geo=body.proxy_geo,
-        proxy_type=body.proxy_type,
+        proxy_host=proxy["host"] if proxy else None,
+        proxy_port=proxy["port"] if proxy else None,
+        proxy_user=proxy["user"] if proxy else None,
+        proxy_pass=encrypt_secret(proxy["pass"]) if proxy and proxy.get("pass") else None,
+        proxy_geo=body.proxy_geo.upper(),
+        proxy_type=proxy["type"] if proxy else "http",
         group_id=body.group_id,
         user_id=current_user.id,
         max_per_day=body.max_per_day,
@@ -117,8 +110,8 @@ async def bulk_import_accounts(
 ):
     """
     Import accounts from CSV.
-    Short format (auto-assigns proxy from pool): email:password:geo
-    Full format:                                 email:password:proxy_host:port:proxy_user:proxy_pass:geo:type
+    Short format (auto proxy from pool): email:password:geo
+    Full format (manual proxy):          email:password:proxy_host:port:proxy_user:proxy_pass:geo:type
     """
     from app.services.proxy import get_proxy_from_pool
 
@@ -147,7 +140,7 @@ async def bulk_import_accounts(
             continue
 
         if len(parts) == 3:
-            # Short format: email:password:geo — auto-assign proxy from pool
+            # Short: email:password:geo  →  auto proxy
             geo = parts[2].strip().upper()
             proxy = await get_proxy_from_pool(geo, db)
             account = SenderAccount(
@@ -163,8 +156,10 @@ async def bulk_import_accounts(
                 user_id=current_user.id,
             )
         elif len(parts) >= 8:
-            # Full format: email:password:proxy_host:port:proxy_user:proxy_pass:geo:type
-            proxy_host, proxy_port, proxy_user, proxy_pass, geo, ptype = parts[2], parts[3], parts[4], parts[5], parts[6], parts[7]
+            # Full: email:password:host:port:user:pass:geo:type
+            proxy_host, proxy_port, proxy_user, proxy_pass, geo, ptype = (
+                parts[2], parts[3], parts[4], parts[5], parts[6], parts[7]
+            )
             account = SenderAccount(
                 email=email,
                 password=encrypt_secret(password),
@@ -178,7 +173,7 @@ async def bulk_import_accounts(
                 user_id=current_user.id,
             )
         else:
-            errors.append(f"Invalid format (need 3 or 8+ fields): {line[:60]}")
+            errors.append(f"Need 3 or 8+ fields: {line[:60]}")
             continue
 
         db.add(account)
@@ -190,6 +185,8 @@ async def bulk_import_accounts(
 
 @router.put("/{account_id}")
 async def update_account(account_id: int, body: AccountUpdate, db: DB, current_user: CurrentUser):
+    from app.services.proxy import get_proxy_from_pool
+
     result = await db.execute(
         select(SenderAccount).where(SenderAccount.id == account_id, SenderAccount.is_deleted == False)
     )
@@ -197,24 +194,24 @@ async def update_account(account_id: int, body: AccountUpdate, db: DB, current_u
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
 
-    if body.proxy_host is not None:
-        account.proxy_host = body.proxy_host
-    if body.proxy_port is not None:
-        account.proxy_port = body.proxy_port
-    if body.proxy_user is not None:
-        account.proxy_user = body.proxy_user
-    if body.proxy_pass is not None:
-        account.proxy_pass = encrypt_secret(body.proxy_pass)
-    if body.proxy_geo is not None:
-        account.proxy_geo = body.proxy_geo
-    if body.proxy_type is not None:
-        account.proxy_type = body.proxy_type
+    if body.account_type is not None:
+        account.account_type = body.account_type
     if body.group_id is not None:
         account.group_id = body.group_id
     if body.max_per_day is not None:
         account.max_per_day = body.max_per_day
     if body.status is not None:
         account.status = body.status
+    if body.proxy_geo is not None:
+        # Re-assign proxy from pool for the new geo
+        proxy = await get_proxy_from_pool(body.proxy_geo.upper(), db)
+        if proxy:
+            account.proxy_host = proxy["host"]
+            account.proxy_port = proxy["port"]
+            account.proxy_user = proxy["user"]
+            account.proxy_pass = encrypt_secret(proxy["pass"]) if proxy.get("pass") else None
+            account.proxy_type = proxy["type"]
+        account.proxy_geo = body.proxy_geo.upper()
 
     await db.commit()
     return account_to_dict(account)
@@ -232,7 +229,7 @@ async def delete_account(account_id: int, db: DB, current_user: CurrentUser):
 
 
 @router.post("/{account_id}/test")
-async def test_account(account_id: int, db: DB, current_user: CurrentUser, background_tasks: BackgroundTasks):
+async def test_account(account_id: int, db: DB, current_user: CurrentUser):
     from app.services.proxy import full_account_health_check
     from datetime import datetime, timezone
 
@@ -249,6 +246,7 @@ async def test_account(account_id: int, db: DB, current_user: CurrentUser, backg
         "proxy_user": account.proxy_user,
         "proxy_pass": decrypt_secret(account.proxy_pass) if account.proxy_pass else None,
         "proxy_geo": account.proxy_geo,
+        "proxy_type": account.proxy_type or "http",
     }
     health = await full_account_health_check(account_dict)
     account.status = health["status"]
@@ -273,5 +271,4 @@ async def rotate_proxy(account_id: int, db: DB, current_user: CurrentUser):
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
 
-    result_data = await rotate_account_proxy(account_id, account.proxy_geo or "US", db)
-    return result_data
+    return await rotate_account_proxy(account_id, account.proxy_geo or "US", db)
