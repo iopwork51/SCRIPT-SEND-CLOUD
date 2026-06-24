@@ -12,6 +12,7 @@ import Campaigns from "./pages/Campaigns";
 import Send from "./pages/Send";
 import Blacklist from "./pages/Blacklist";
 import Stats from "./pages/Stats";
+import Proxies from "./pages/Proxies";
 
 function PrivateRoute({ children }) {
   const { user, loading } = useAuth();
@@ -43,6 +44,7 @@ export default function App() {
           <Route path="send" element={<Send />} />
           <Route path="blacklist" element={<Blacklist />} />
           <Route path="stats" element={<Stats />} />
+          <Route path="proxies" element={<Proxies />} />
         </Route>
       </Routes>
     </AuthProvider>

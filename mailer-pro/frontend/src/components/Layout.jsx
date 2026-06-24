@@ -2,12 +2,13 @@ import { Outlet, NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import {
   LayoutDashboard, Users, Mail, List, Globe, Tag, Megaphone,
-  Send, AlertOctagon, BarChart2, LogOut, ChevronRight,
+  Send, AlertOctagon, BarChart2, LogOut, ChevronRight, Shield,
 } from "lucide-react";
 
 const navItems = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/accounts", label: "Accounts", icon: Users },
+  { to: "/proxies", label: "Proxies", icon: Shield },
   { to: "/groups", label: "Groups", icon: List },
   { to: "/recipients", label: "Recipients", icon: Mail },
   { to: "/affiliates", label: "Affiliates", icon: Globe },

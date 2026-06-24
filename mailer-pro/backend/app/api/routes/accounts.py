@@ -115,7 +115,13 @@ async def bulk_import_accounts(
     file: UploadFile | None = None,
     group_id: int | None = None,
 ):
-    """Import accounts from CSV: email:password:proxy_host:port:proxy_user:proxy_pass:geo:type"""
+    """
+    Import accounts from CSV.
+    Short format (auto-assigns proxy from pool): email:password:geo
+    Full format:                                 email:password:proxy_host:port:proxy_user:proxy_pass:geo:type
+    """
+    from app.services.proxy import get_proxy_from_pool
+
     if file:
         content = (await file.read()).decode("utf-8")
     elif csv_data:
@@ -128,28 +134,53 @@ async def bulk_import_accounts(
 
     for line in lines:
         parts = line.split(":")
-        if len(parts) < 8:
+        if len(parts) < 2:
             errors.append(f"Invalid format: {line[:50]}")
             continue
-        email, password, proxy_host, proxy_port, proxy_user, proxy_pass, geo, ptype = parts[:8]
+
+        email = parts[0].strip()
+        password = parts[1].strip()
 
         existing = await db.execute(select(SenderAccount).where(SenderAccount.email == email))
         if existing.scalar_one_or_none():
             skipped += 1
             continue
 
-        account = SenderAccount(
-            email=email,
-            password=encrypt_secret(password),
-            proxy_host=proxy_host,
-            proxy_port=int(proxy_port),
-            proxy_user=proxy_user,
-            proxy_pass=encrypt_secret(proxy_pass),
-            proxy_geo=geo.upper(),
-            proxy_type=ptype,
-            group_id=group_id,
-            user_id=current_user.id,
-        )
+        if len(parts) == 3:
+            # Short format: email:password:geo — auto-assign proxy from pool
+            geo = parts[2].strip().upper()
+            proxy = await get_proxy_from_pool(geo, db)
+            account = SenderAccount(
+                email=email,
+                password=encrypt_secret(password),
+                proxy_host=proxy["host"] if proxy else None,
+                proxy_port=proxy["port"] if proxy else None,
+                proxy_user=proxy["user"] if proxy else None,
+                proxy_pass=encrypt_secret(proxy["pass"]) if proxy and proxy.get("pass") else None,
+                proxy_geo=geo,
+                proxy_type=proxy["type"] if proxy else "http",
+                group_id=group_id,
+                user_id=current_user.id,
+            )
+        elif len(parts) >= 8:
+            # Full format: email:password:proxy_host:port:proxy_user:proxy_pass:geo:type
+            proxy_host, proxy_port, proxy_user, proxy_pass, geo, ptype = parts[2], parts[3], parts[4], parts[5], parts[6], parts[7]
+            account = SenderAccount(
+                email=email,
+                password=encrypt_secret(password),
+                proxy_host=proxy_host,
+                proxy_port=int(proxy_port),
+                proxy_user=proxy_user,
+                proxy_pass=encrypt_secret(proxy_pass),
+                proxy_geo=geo.upper(),
+                proxy_type=ptype,
+                group_id=group_id,
+                user_id=current_user.id,
+            )
+        else:
+            errors.append(f"Invalid format (need 3 or 8+ fields): {line[:60]}")
+            continue
+
         db.add(account)
         created.append(email)
 

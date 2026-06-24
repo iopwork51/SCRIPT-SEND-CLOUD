@@ -11,6 +11,7 @@ from app.core.database import AsyncSessionLocal
 from app.core.security import hash_password
 from app.db.models.users import User
 from app.api.routes import auth, users, accounts, groups, recipients, affiliates, offers, blacklist, campaigns
+from app.api.routes import proxy_providers, proxies as proxies_router
 
 limiter = Limiter(key_func=get_remote_address)
 
@@ -85,6 +86,8 @@ app.include_router(offers.router, prefix="/api")
 app.include_router(blacklist.router, prefix="/api")
 app.include_router(blacklist.suppression_router, prefix="/api")
 app.include_router(campaigns.router, prefix="/api")
+app.include_router(proxy_providers.router, prefix="/api")
+app.include_router(proxies_router.router, prefix="/api")
 
 
 @app.get("/api/health")

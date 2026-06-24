@@ -156,10 +156,20 @@ export default function Accounts() {
       {/* Bulk Import Modal */}
       {showBulk && (
         <Modal title="Bulk Import (CSV)" onClose={() => setShowBulk(false)}>
-          <p className="text-xs text-gray-500 mb-2 font-mono bg-gray-50 p-2 rounded">email:password:proxy_host:port:proxy_user:proxy_pass:geo:type</p>
+          <div className="space-y-2 mb-3">
+            <div className="bg-blue-50 border border-blue-100 rounded-lg p-3">
+              <div className="text-xs font-semibold text-blue-700 mb-1">Short format — auto-assign proxy from pool:</div>
+              <div className="font-mono text-xs text-blue-800">email:password:geo</div>
+              <div className="font-mono text-xs text-gray-500 mt-1">john@gmail.com:AppPass1234:US</div>
+            </div>
+            <div className="bg-gray-50 border border-gray-100 rounded-lg p-3">
+              <div className="text-xs font-semibold text-gray-600 mb-1">Full format — specify proxy manually:</div>
+              <div className="font-mono text-xs text-gray-700">email:password:proxy_host:port:proxy_user:proxy_pass:geo:type</div>
+            </div>
+          </div>
           <textarea
             rows={8} value={bulkCsv} onChange={e => setBulkCsv(e.target.value)}
-            placeholder="john@gmail.com:AppPass1234:rp.webshare.io:5432:user:pass:US:webshare_gb"
+            placeholder={"john@gmail.com:AppPass1234:US\njane@gmail.com:AppPass5678:FR"}
             className="w-full text-xs font-mono border border-gray-200 rounded-lg p-2 focus:outline-none focus:border-blue-400"
           />
           <div className="flex justify-end gap-2 pt-2">

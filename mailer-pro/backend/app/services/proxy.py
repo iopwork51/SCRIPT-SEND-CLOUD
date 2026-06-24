@@ -2,66 +2,218 @@ import httpx
 import socks
 import smtplib
 from typing import Optional
+from datetime import datetime, timezone
 from app.core.config import settings
 
 WEBSHARE_BASE = "https://proxy.webshare.io/api/v2"
+DATAIMPULSE_BASE = "https://api.dataimpulse.com"
+DATAIMPULSE_PROXY_HOST = "gw.dataimpulse.com"
+DATAIMPULSE_HTTP_PORT = 823
+DATAIMPULSE_SOCKS5_PORT = 2334
 
 
-async def get_proxy_list(geo: str = None, page_size: int = 100) -> list:
-    params = {"mode": "direct", "valid": True, "page": 1, "page_size": page_size}
-    if geo:
-        params["country_code__in"] = geo.upper()
+# ── Webshare ──────────────────────────────────────────────────────────────────
 
+async def webshare_get_usage(api_key: str) -> dict:
+    async with httpx.AsyncClient() as client:
+        r = await client.get(
+            f"{WEBSHARE_BASE}/profile/",
+            headers={"Authorization": f"Token {api_key}"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        data = r.json()
+        return {
+            "used_gb": round(data.get("bandwidth_used", 0) / (1024 ** 3), 3),
+            "total_gb": round(data.get("bandwidth_limit", 0) / (1024 ** 3), 3),
+            "proxy_count": data.get("proxy_count", 0),
+        }
+
+
+async def webshare_fetch_proxies(api_key: str, page_size: int = 500) -> list:
     async with httpx.AsyncClient() as client:
         r = await client.get(
             f"{WEBSHARE_BASE}/proxy/list/",
-            headers={"Authorization": f"Token {settings.WEBSHARE_API_KEY}"},
-            params=params,
-            timeout=15,
+            headers={"Authorization": f"Token {api_key}"},
+            params={"mode": "direct", "valid": True, "page": 1, "page_size": page_size},
+            timeout=20,
         )
         r.raise_for_status()
         return r.json().get("results", [])
 
 
-async def get_fresh_proxy(geo: str = "US") -> Optional[dict]:
-    proxies = await get_proxy_list(geo=geo, page_size=1)
-    if not proxies:
-        return None
-    p = proxies[0]
-    return {
-        "host": p["proxy_address"],
-        "port": p["ports"]["socks5"],
-        "user": p["username"],
-        "pass": p["password"],
-        "geo": p["country_code"],
-        "type": "socks5",
-    }
+async def webshare_sync_to_db(provider_id: int, api_key: str, db) -> dict:
+    from app.db.models.proxies import Proxy
+    from app.core.security import encrypt_secret
+    from sqlalchemy import select
+
+    raw = await webshare_fetch_proxies(api_key)
+    created = 0
+    updated = 0
+
+    for p in raw:
+        host = p.get("proxy_address", "")
+        port = p.get("ports", {}).get("socks5") or p.get("ports", {}).get("http")
+        if not host or not port:
+            continue
+
+        geo = (p.get("country_code") or "").upper()
+        username = p.get("username", "")
+        password = p.get("password", "")
+
+        result = await db.execute(
+            select(Proxy).where(Proxy.host == host, Proxy.port == port, Proxy.is_deleted == False)
+        )
+        existing = result.scalar_one_or_none()
+
+        if existing:
+            existing.username = username
+            existing.password = encrypt_secret(password) if password else None
+            existing.geo = geo
+            updated += 1
+        else:
+            db.add(Proxy(
+                provider_id=provider_id,
+                host=host,
+                port=int(port),
+                username=username,
+                password=encrypt_secret(password) if password else None,
+                geo=geo,
+                proxy_type="socks5",
+                is_rotating=False,
+            ))
+            created += 1
+
+    await db.commit()
+    return {"created": created, "updated": updated, "total_fetched": len(raw)}
 
 
-async def get_proxy_usage() -> dict:
+# ── DataImpulse ───────────────────────────────────────────────────────────────
+
+async def dataimpulse_get_usage(api_key: str) -> dict:
     async with httpx.AsyncClient() as client:
         r = await client.get(
-            f"{WEBSHARE_BASE}/profile/",
-            headers={"Authorization": f"Token {settings.WEBSHARE_API_KEY}"},
+            f"{DATAIMPULSE_BASE}/user/profile",
+            headers={"Authorization": f"Bearer {api_key}"},
             timeout=10,
         )
+        r.raise_for_status()
         data = r.json()
+        traffic = data.get("traffic", {})
         return {
-            "used_gb": data.get("bandwidth_used", 0) / (1024 ** 3),
-            "total_gb": data.get("bandwidth_limit", 0) / (1024 ** 3),
+            "used_gb": round(traffic.get("used", 0) / (1024 ** 3), 3),
+            "total_gb": round(traffic.get("total", 0) / (1024 ** 3), 3),
             "proxy_count": data.get("proxy_count", 0),
+            "plan": data.get("plan", ""),
         }
 
 
-async def test_proxy_connection(proxy: dict) -> dict:
-    proxy_url = (
-        f"socks5://{proxy['user']}:{proxy['pass']}"
-        f"@{proxy['host']}:{proxy['port']}"
+async def dataimpulse_sync_to_db(
+    provider_id: int,
+    proxy_host: str,
+    proxy_port: int,
+    proxy_username: str,
+    proxy_password: str,
+    geos: list[str],
+    db,
+) -> dict:
+    """
+    DataImpulse uses rotating proxies — one gateway endpoint per geo.
+    Username format: username-cc-US (geo-targeted rotating).
+    """
+    from app.db.models.proxies import Proxy
+    from app.core.security import encrypt_secret
+    from sqlalchemy import select
+
+    created = 0
+    updated = 0
+
+    for geo in geos:
+        geo = geo.upper().strip()
+        if not geo:
+            continue
+
+        # Build geo-targeted username
+        geo_username = f"{proxy_username}-cc-{geo}"
+        host = proxy_host or DATAIMPULSE_PROXY_HOST
+        port = proxy_port or DATAIMPULSE_HTTP_PORT
+
+        result = await db.execute(
+            select(Proxy).where(
+                Proxy.provider_id == provider_id,
+                Proxy.geo == geo,
+                Proxy.is_deleted == False,
+            )
+        )
+        existing = result.scalar_one_or_none()
+
+        if existing:
+            existing.host = host
+            existing.port = port
+            existing.username = geo_username
+            existing.password = encrypt_secret(proxy_password) if proxy_password else None
+            updated += 1
+        else:
+            db.add(Proxy(
+                provider_id=provider_id,
+                host=host,
+                port=port,
+                username=geo_username,
+                password=encrypt_secret(proxy_password) if proxy_password else None,
+                geo=geo,
+                proxy_type="http",
+                is_rotating=True,
+            ))
+            created += 1
+
+    await db.commit()
+    return {"created": created, "updated": updated, "geos": geos}
+
+
+# ── Proxy pool helpers ────────────────────────────────────────────────────────
+
+async def get_proxy_from_pool(geo: str, db) -> Optional[dict]:
+    """Pick a working proxy for the given geo from the local pool."""
+    from app.db.models.proxies import Proxy
+    from app.core.security import decrypt_secret
+    from sqlalchemy import select
+
+    geo = geo.upper()
+    result = await db.execute(
+        select(Proxy)
+        .where(Proxy.geo == geo, Proxy.status != "failed", Proxy.is_deleted == False)
+        .order_by(Proxy.last_tested.desc().nullslast())
+        .limit(1)
     )
+    p = result.scalar_one_or_none()
+    if not p:
+        return None
+    return {
+        "host": p.host,
+        "port": p.port,
+        "user": p.username,
+        "pass": decrypt_secret(p.password) if p.password else None,
+        "geo": p.geo,
+        "type": p.proxy_type,
+    }
+
+
+# ── Proxy connectivity test ───────────────────────────────────────────────────
+
+async def test_proxy_connection(proxy: dict) -> dict:
+    ptype = proxy.get("type", "socks5")
+    user = proxy.get("user") or proxy.get("username")
+    pw = proxy.get("pass") or proxy.get("password")
+
+    if ptype == "socks5":
+        proxy_url = f"socks5://{user}:{pw}@{proxy['host']}:{proxy['port']}"
+    else:
+        proxy_url = f"http://{user}:{pw}@{proxy['host']}:{proxy['port']}"
+
     try:
         async with httpx.AsyncClient(
             proxies={"http://": proxy_url, "https://": proxy_url},
-            timeout=12,
+            timeout=15,
         ) as client:
             r = await client.get("http://ip-api.com/json")
             data = r.json()
@@ -75,6 +227,37 @@ async def test_proxy_connection(proxy: dict) -> dict:
     except Exception as e:
         return {"working": False, "error": str(e), "exit_ip": None, "exit_geo": None}
 
+
+async def test_proxy_by_id(proxy_id: int, db) -> dict:
+    from app.db.models.proxies import Proxy
+    from app.core.security import decrypt_secret
+    from sqlalchemy import select
+
+    result = await db.execute(select(Proxy).where(Proxy.id == proxy_id))
+    p = result.scalar_one_or_none()
+    if not p:
+        return {"working": False, "error": "Proxy not found"}
+
+    proxy_dict = {
+        "host": p.host,
+        "port": p.port,
+        "user": p.username,
+        "pass": decrypt_secret(p.password) if p.password else None,
+        "geo": p.geo,
+        "type": p.proxy_type,
+    }
+    result_data = await test_proxy_connection(proxy_dict)
+
+    p.last_tested = datetime.now(timezone.utc)
+    p.status = "active" if result_data["working"] else "failed"
+    if result_data.get("exit_ip"):
+        p.exit_ip = result_data["exit_ip"]
+    await db.commit()
+
+    return result_data
+
+
+# ── SMTP test via proxy ───────────────────────────────────────────────────────
 
 async def test_smtp_via_proxy(account_email: str, account_password: str, proxy: dict) -> dict:
     try:
@@ -118,10 +301,16 @@ async def full_account_health_check(account: dict) -> dict:
         "user": account.get("proxy_user"),
         "pass": account.get("proxy_pass"),
         "geo": account.get("proxy_geo", ""),
+        "type": account.get("proxy_type", "socks5"),
     }
 
     if not proxy["host"]:
-        return {"status": "proxy_error", "proxy": {"working": False, "error": "No proxy configured"}, "smtp": None, "recommended_action": "add_proxy"}
+        return {
+            "status": "proxy_error",
+            "proxy": {"working": False, "error": "No proxy configured"},
+            "smtp": None,
+            "recommended_action": "add_proxy",
+        }
 
     proxy_result = await test_proxy_connection(proxy)
     if not proxy_result["working"]:
@@ -130,8 +319,12 @@ async def full_account_health_check(account: dict) -> dict:
     smtp_result = await test_smtp_via_proxy(account["email"], account["password"], proxy)
     if not smtp_result["working"]:
         status = "smtp_blocked" if smtp_result.get("smtp") == "smtp_error" else "auth_failed"
-        return {"status": status, "proxy": proxy_result, "smtp": smtp_result,
-                "recommended_action": "check_account" if status == "auth_failed" else "wait_retry"}
+        return {
+            "status": status,
+            "proxy": proxy_result,
+            "smtp": smtp_result,
+            "recommended_action": "check_account" if status == "auth_failed" else "wait_retry",
+        }
 
     return {"status": "active", "proxy": proxy_result, "smtp": smtp_result, "recommended_action": "none"}
 
@@ -139,16 +332,16 @@ async def full_account_health_check(account: dict) -> dict:
 async def rotate_account_proxy(account_id: int, geo: str, db) -> dict:
     from app.db.models.accounts import SenderAccount
     from app.core.security import encrypt_secret
+    from sqlalchemy import select
 
-    new_proxy = await get_fresh_proxy(geo)
+    new_proxy = await get_proxy_from_pool(geo, db)
     if not new_proxy:
         return {"success": False, "error": f"No proxies available for geo: {geo}"}
 
     test = await test_proxy_connection(new_proxy)
     if not test["working"]:
-        return {"success": False, "error": "New proxy also failed health check"}
+        return {"success": False, "error": "Proxy from pool also failed health check"}
 
-    from sqlalchemy import select
     result = await db.execute(select(SenderAccount).where(SenderAccount.id == account_id))
     account = result.scalar_one_or_none()
     if not account:
@@ -157,7 +350,9 @@ async def rotate_account_proxy(account_id: int, geo: str, db) -> dict:
     account.proxy_host = new_proxy["host"]
     account.proxy_port = new_proxy["port"]
     account.proxy_user = new_proxy["user"]
-    account.proxy_pass = encrypt_secret(new_proxy["pass"])
+    account.proxy_pass = encrypt_secret(new_proxy["pass"]) if new_proxy["pass"] else None
+    account.proxy_geo = new_proxy["geo"]
+    account.proxy_type = new_proxy["type"]
     account.status = "active"
     await db.commit()
 
