@@ -48,8 +48,15 @@ class TestEmailRequest(BaseModel):
     to_email: str
 
 
+class PlaceholderSet(BaseModel):
+    lines: str = ""              # newline-separated values
+    rotation: int = 1
+    combination: bool = False
+
+
 class GenerateScriptRequest(BaseModel):
-    direct_recipients: list[str] = []   # pasted emails, bypass lists
+    direct_recipients: list[str] = []        # pasted emails, bypass lists
+    placeholders: list[PlaceholderSet] = []  # [Placeholder1], [Placeholder2], …
 
 
 def campaign_to_dict(c: Campaign) -> dict:
@@ -262,6 +269,16 @@ async def generate_script(
     if not recipients:
         raise HTTPException(status_code=400, detail="No recipients — select a list or paste direct recipients.")
 
+    # Build placeholder sets ([Placeholder1], [Placeholder2], …)
+    placeholders = []
+    if body and body.placeholders:
+        for ph in body.placeholders:
+            placeholders.append({
+                "lines": [l.strip() for l in ph.lines.splitlines() if l.strip()],
+                "rotation": ph.rotation or 1,
+                "combination": ph.combination,
+            })
+
     # Filter suppression + blacklist
     if campaign.offer_id:
         sup_result = await db.execute(
@@ -288,7 +305,7 @@ async def generate_script(
             continue
         clean_recipients.append(r)
 
-    script = generate_campaign_script(campaign, accounts_data, clean_recipients)
+    script = generate_campaign_script(campaign, accounts_data, clean_recipients, placeholders)
     return {
         "script": script,
         "total_recipients": len(recipients),

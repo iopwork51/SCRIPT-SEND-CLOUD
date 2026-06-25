@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import api from "../lib/api";
-import { Send as SendIcon, Copy, CheckCircle, ExternalLink, RefreshCw, HelpCircle, ChevronDown, X } from "lucide-react";
+import { Send as SendIcon, Copy, CheckCircle, ExternalLink, RefreshCw, HelpCircle, ChevronDown, X, Plus } from "lucide-react";
 
 // ── tiny helpers ──────────────────────────────────────────────────────────────
 const Toggle = ({ value, onChange, label }) => (
@@ -33,22 +33,51 @@ const inp =
 const ta =
   "w-full border border-gray-300 rounded px-2 py-1 text-xs font-mono resize-none focus:outline-none focus:border-blue-400";
 
-// Tag reference shown in the Tags Help panel
-const TAGS = [
-  ["[email]", "recipient email address"],
-  ["[first_name]", "name before @ (or list name)"],
-  ["[domain]", "your sending domain"],
-  ["[mail_date]", "today's date (YYYY-MM-DD)"],
-  ["{a_5}", "random letters, fresh each email (n=length)"],
-  ["{n_4}", "random digits, fresh each email"],
-  ["{an_8}", "random letters+digits, fresh each email"],
-  ["[a_5]", "random letters, FIXED for whole run"],
-  ["[al_5]", "random lowercase letters (fixed)"],
-  ["[au_5]", "random UPPERCASE letters (fixed)"],
-  ["[an_10]", "random letters+digits (fixed)"],
-  ["[n_6]", "random digits (fixed)"],
-  ["[LinksPlaceholder]", "rotates through your links list"],
-  ["[negative]", "inserts your Negative/Filler content"],
+// Tag reference shown in the Tags Help popup
+const TAG_GROUPS = [
+  {
+    title: "Unique Random Tags",
+    note: "Same value everywhere in one email, different per email.  e.g. [uan_12] fixed size · [uan_5_15] random ranged size",
+    tags: [
+      ["[ua]", "Unique Alpha Random"],
+      ["[ual]", "Unique Alpha Lowercase Random"],
+      ["[uau]", "Unique Alpha Uppercase Random"],
+      ["[uan]", "Unique Alphanumeric Random"],
+      ["[uanl]", "Unique Alphanumeric Lowercase Random"],
+      ["[uanu]", "Unique Alphanumeric Uppercase Random"],
+      ["[un]", "Unique Numeric Random"],
+      ["[uhu]", "Unique Uppercase Hex Random"],
+      ["[uhl]", "Unique Lowercase Hex Random"],
+    ],
+  },
+  {
+    title: "Random Tags",
+    note: "Fresh value each time it appears.  e.g. [an_12] fixed size · [an_5_15] random ranged size",
+    tags: [
+      ["[a]", "Alpha Random"],
+      ["[al]", "Alpha Lowercase Random"],
+      ["[au]", "Alpha Uppercase Random"],
+      ["[an]", "Alphanumeric Random"],
+      ["[anl]", "Alphanumeric Lowercase Random"],
+      ["[anu]", "Alphanumeric Uppercase Random"],
+      ["[n]", "Numeric Random"],
+      ["[hu]", "Uppercase Hex Random"],
+      ["[hl]", "Lowercase Hex Random"],
+    ],
+  },
+  {
+    title: "Special Tags",
+    note: "",
+    tags: [
+      ["[email]", "recipient email address"],
+      ["[first_name]", "name before @ (or list name)"],
+      ["[domain]", "your sending domain"],
+      ["[mail_date]", "today's date (YYYY-MM-DD)"],
+      ["[Placeholder1]", "rotates through Placeholder tab 1 (2,3… for more)"],
+      ["[LinksPlaceholder]", "rotates through your links list"],
+      ["[negative]", "inserts your Negative/Filler content"],
+    ],
+  },
 ];
 
 // ── component ─────────────────────────────────────────────────────────────────
@@ -87,7 +116,6 @@ export default function Send() {
     network_id:      "",
     rcpt_rotation:   1,
     combination:     false,
-    placeholders:    "",              // one per line
     direct_recipients: "",            // paste emails
     // filters
     filter_fresh:    false,
@@ -114,8 +142,17 @@ export default function Send() {
   const [campaignId, setCampaignId] = useState(null);
   const [copied, setCopied]       = useState(false);
   const [showTags, setShowTags]   = useState(false);
-  const [openPh, setOpenPh]       = useState(false);
   const [openNeg, setOpenNeg]     = useState(false);
+
+  // multi-tab placeholders → [Placeholder1], [Placeholder2], …
+  const [placeholders, setPlaceholders] = useState([{ lines: "", rotation: 1, combination: false }]);
+  const [phTab, setPhTab] = useState(0);
+  const addPlaceholder = () => { setPlaceholders((p) => [...p, { lines: "", rotation: 1, combination: false }]); setPhTab(placeholders.length); };
+  const removePlaceholder = (i) => {
+    setPlaceholders((p) => p.length > 1 ? p.filter((_, idx) => idx !== i) : p);
+    setPhTab((t) => Math.max(0, t - (i <= t ? 1 : 0)));
+  };
+  const setPh = (i, key, val) => setPlaceholders((p) => p.map((ph, idx) => idx === i ? { ...ph, [key]: val } : ph));
 
   useEffect(() => {
     Promise.all([
@@ -185,7 +222,13 @@ export default function Send() {
       const direct = cfg.direct_recipients
         ? cfg.direct_recipients.split("\n").map((s) => s.trim()).filter(Boolean)
         : [];
-      const { data } = await api.post(`/campaigns/${cid}/generate-script`, { direct_recipients: direct });
+      const phPayload = placeholders
+        .filter((p) => p.lines.trim())
+        .map((p) => ({ lines: p.lines, rotation: parseInt(p.rotation) || 1, combination: p.combination }));
+      const { data } = await api.post(`/campaigns/${cid}/generate-script`, {
+        direct_recipients: direct,
+        placeholders: phPayload,
+      });
       setScript(data.script);
       setScriptMeta(data);
     } catch (e) {
@@ -436,12 +479,49 @@ export default function Send() {
         </button>
       </div>
 
-      {/* ── Row 7: Placeholders | Negative (collapsible) ── */}
+      {/* ── Row 7: Placeholders (multi-tab) | Negative (collapsible) ── */}
       <div className="grid grid-cols-2 gap-2 mb-2">
-        <Collapsible title="Placeholders (one per line)" open={openPh} onToggle={() => setOpenPh((v) => !v)}>
-          <textarea rows={4} value={cfg.placeholders} onChange={setE("placeholders")}
+        <Panel title={`Placeholders (${placeholders.length} placeholder${placeholders.length > 1 ? "s" : ""} found)`}>
+          {/* tabs */}
+          <div className="flex items-center gap-1 border-b border-gray-100 mb-2 overflow-x-auto">
+            {placeholders.map((_, i) => (
+              <div key={i}
+                className={`flex items-center gap-1 px-2 py-1 text-xs rounded-t cursor-pointer whitespace-nowrap ${i === phTab ? "bg-blue-50 text-blue-700 border-b-2 border-blue-500" : "text-gray-500 hover:bg-gray-50"}`}
+                onClick={() => setPhTab(i)}>
+                Placeholder {i + 1}
+                {placeholders.length > 1 && (
+                  <button onClick={(e) => { e.stopPropagation(); removePlaceholder(i); }} className="text-gray-400 hover:text-red-500">
+                    <X size={11} />
+                  </button>
+                )}
+              </div>
+            ))}
+            <button onClick={addPlaceholder} title="Add placeholder" className="px-1.5 py-1 text-blue-600 hover:bg-blue-50 rounded">
+              <Plus size={13} />
+            </button>
+          </div>
+
+          {/* active tab content */}
+          <div className="flex items-center gap-3 mb-2">
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] text-gray-400 uppercase">Rotation</span>
+              <input type="number" min={1} value={placeholders[phTab].rotation}
+                onChange={(e) => setPh(phTab, "rotation", e.target.value)} className={`${inp} w-16`} />
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] text-gray-400 uppercase">Combination</span>
+              <Toggle value={placeholders[phTab].combination} onChange={(v) => setPh(phTab, "combination", v)} />
+            </div>
+            <code className="ml-auto bg-gray-100 text-blue-700 px-1.5 py-0.5 rounded text-[11px] font-mono">[Placeholder{phTab + 1}]</code>
+          </div>
+          <textarea rows={4} value={placeholders[phTab].lines}
+            onChange={(e) => setPh(phTab, "lines", e.target.value)}
             placeholder={"value1\nvalue2\nvalue3"} className={ta} />
-        </Collapsible>
+          <div className="text-[10px] text-gray-400 mt-1">
+            {placeholders[phTab].lines.split("\n").filter(Boolean).length} lines · use <code className="font-mono">[Placeholder{phTab + 1}]</code> in body/subject
+          </div>
+        </Panel>
+
         <Collapsible title="Negative / Filler Content ([negative] tag)" open={openNeg} onToggle={() => setOpenNeg((v) => !v)}>
           <textarea rows={4} value={cfg.negative_content} onChange={setE("negative_content")}
             placeholder="Text injected at the [negative] tag…" className={ta} />
@@ -551,18 +631,26 @@ export default function Send() {
       {/* ── Tags Help popup ── */}
       {showTags && (
         <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => setShowTags(false)}>
-          <div className="bg-white rounded-xl shadow-xl w-full max-w-2xl p-6 max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl p-6 max-h-[88vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
               <h2 className="font-semibold text-gray-900">Tags Help — use these in Header, Subject, From & Body</h2>
               <button onClick={() => setShowTags(false)} className="text-gray-400 hover:text-gray-600">
                 <X size={18} />
               </button>
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-2">
-              {TAGS.map(([tag, desc]) => (
-                <div key={tag} className="flex items-center gap-2 text-xs">
-                  <code className="bg-gray-100 text-blue-700 px-1.5 py-0.5 rounded font-mono whitespace-nowrap">{tag}</code>
-                  <span className="text-gray-500">{desc}</span>
+            <div className="space-y-5">
+              {TAG_GROUPS.map((grp) => (
+                <div key={grp.title}>
+                  <div className="text-sm font-semibold text-gray-800">{grp.title}</div>
+                  {grp.note && <div className="text-[11px] text-gray-400 mb-2">{grp.note}</div>}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1.5">
+                    {grp.tags.map(([tag, desc]) => (
+                      <div key={tag} className="flex items-center gap-2 text-xs">
+                        <code className="bg-gray-100 text-blue-700 px-1.5 py-0.5 rounded font-mono whitespace-nowrap">{tag}</code>
+                        <span className="text-gray-500">{desc}</span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               ))}
             </div>
